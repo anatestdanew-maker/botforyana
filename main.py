@@ -317,7 +317,9 @@ def find_analogs(record: dict[str, Any]) -> list[dict[str, Any]]:
 
 def medical_device_short_title(record: dict[str, Any]) -> str:
     """Повертає коротку назву тест-смужок для кнопки та картки."""
-    text = clean_text(record.get("dosage", ""))
+    # У вкладці "РЕЄСТР МЕД ВИРОБИ" опис із моделлю
+    # зберігається у фізичному стовпці C, тобто в record["trade_name"].
+    text = clean_text(record.get("trade_name", ""))
 
     patterns = [
         r"Rightest\s+[A-Za-z0-9+\- ]+\([^)]+\)",
