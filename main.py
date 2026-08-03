@@ -593,6 +593,39 @@ async def button_handler(
         return
 
     # -------------------------
+    # Загальний пошук та пошук інсулінів
+    # -------------------------
+
+    if data_cb in {"drug_search", "insulin"}:
+        mode = {
+            "drug_search": "all",
+            "insulin": "insulin",
+        }[data_cb]
+
+        context.user_data["search_mode"] = mode
+        context.user_data.pop("search_result_ids", None)
+        context.user_data.pop("search_text", None)
+
+        if mode == "insulin":
+            prompt = "💉 Введіть назву інсуліну або діючу речовину:"
+        else:
+            prompt = "🔎 Введіть назву препарату або діючу речовину:"
+
+        await query.edit_message_text(
+            prompt,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data="drugs")],
+                [
+                    InlineKeyboardButton(
+                        "🏠 Головне меню",
+                        callback_data="main_menu"
+                    )
+                ],
+            ]),
+        )
+        return
+
+    # -------------------------
     # Перелік тест-смужок
     # -------------------------
 
