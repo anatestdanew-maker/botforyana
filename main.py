@@ -282,6 +282,159 @@ def extract_short_number(department: str, fallback: str = "") -> str:
     return clean_text(fallback)
 
 
+def normalize_program_name(value: str) -> str:
+    """Нормалізація назв програм для зіставлення."""
+    text = normalize(value)
+    text = text.replace("’", "'").replace("`", "'")
+    text = text.replace("+", " плюс ")
+    text = re.sub(r"[«»\"'“”„‟()]", " ", text)
+    text = re.sub(r"[^a-zа-яіїєґ0-9]+", " ", text, flags=re.IGNORECASE)
+    return " ".join(text.split())
+
+
+def normalized_program_tokens(value: str) -> set[str]:
+    ignored = {
+        "україна", "україни", "програма", "новий", "нова",
+        "закрита", "закрито", "діє", "працює", "до", "без",
+        "пролонгації", "для", "та", "і", "з", "в", "на",
+    }
+
+    return {
+        token
+        for token in normalize_program_name(value).split()
+        if len(token) >= 3 and token not in ignored
+    }
+
+
+def canonical_program_key(program_name: str) -> str:
+    """
+    Канонічний ключ програми.
+    Використовується для відомих варіантів написання.
+    """
+    text = normalize_program_name(program_name)
+
+    replacements = {
+        "астразенека терапія": "астразенека терапія плюс",
+        "астразенека терапіяплюс": "астразенека терапія плюс",
+        "астразенека терапія плюс": "астразенека терапія плюс",
+        "біокодекс асакард": "біокодекс асакард",
+        "біокодекс україна асакард": "біокодекс асакард",
+    }
+
+    return replacements.get(text, text)
+
+
+def program_similarity(left: str, right: str) -> float:
+    """
+    Оцінка схожості двох назв.
+    Не об'єднує програми лише через однакового виробника:
+    потрібен збіг характерних слів назви.
+    """
+    left_key = canonical_program_key(left)
+    right_key = canonical_program_key(right)
+
+    if left_key == right_key:
+        return 1.0
+
+    left_tokens = normalized_program_tokens(left)
+    right_tokens = normalized_program_tokens(right)
+
+    if not left_tokens or not right_tokens:
+        return 0.0
+
+    common = left_tokens & right_tokens
+    union = left_tokens | right_tokens
+
+    token_score = len(common) / len(union)
+
+    # Довге спільне слово на кшталт "асакард", "neurocard",
+    # "терапія" є сильним сигналом.
+    distinctive = max(
+        (len(token) for token in common),
+        default=0,
+    )
+
+    if distinctive >= 7:
+        token_score += 0.35
+
+    # Якщо одна очищена назва входить в іншу.
+    if left_key in right_key or right_key in left_key:
+        token_score += 0.35
+
+    return min(token_score, 1.0)
+
+
+def resolve_to_main_program(
+    program_name: str,
+    main_programs: list[str],
+) -> str | None:
+    """
+    Зіставляє назву з вкладки ЗР або умов із основною назвою
+    з вкладки «Аптеки учасники оновлено 15.06».
+    """
+    if not program_name:
+        return None
+
+    key = canonical_program_key(program_name)
+
+    for main_name in main_programs:
+        if canonical_program_key(main_name) == key:
+            return main_name
+
+    best_name = None
+    best_score = 0.0
+
+    for main_name in main_programs:
+        score = program_similarity(program_name, main_name)
+
+        if score > best_score:
+            best_score = score
+            best_name = main_name
+
+    # Поріг достатньо високий, щоб не зливати різні програми
+    # одного виробника.
+    if best_score >= 0.58:
+        return best_name
+
+    return None
+
+
+def normalize_medicine_name(value: str) -> str:
+    """
+    Нормалізація лише для пошуку препаратів.
+    Українські «і» та «и» прирівнюються.
+    """
+    text = normalize(value)
+    text = text.replace("і", "и")
+    text = text.replace("ї", "и")
+    text = text.replace("й", "и")
+    text = re.sub(r"[^a-zа-яєґ0-9]+", " ", text, flags=re.IGNORECASE)
+    return " ".join(text.split())
+
+
+def package_word(value: str) -> str:
+    """Повертає правильну форму слова «упаковка»."""
+    match = re.search(r"\d+", clean_text(value))
+
+    if not match:
+        return "упаковок"
+
+    number = int(match.group(0))
+    last_two = number % 100
+    last = number % 10
+
+    if 11 <= last_two <= 14:
+        return "упаковок"
+
+    if last == 1:
+        return "упаковка"
+
+    if last in {2, 3, 4}:
+        return "упаковки"
+
+    return "упаковок"
+
+
 def program_status(program_name: str) -> str:
     """active → closing → closed."""
     normalized = normalize(program_name)
@@ -487,8 +640,21 @@ def load_social_program_conditions() -> dict[str, dict[str, Any]]:
         if category and category not in program_data["categories"]:
             program_data["categories"].append(category)
 
-        # Рядок препарату: є назва/дозування у C.
-        if col_c:
+        # Пропускаємо службовий рядок заголовків таблиці.
+        normalized_product = normalize(col_c)
+        normalized_limit = normalize(col_b)
+        normalized_discount = normalize(col_d)
+
+        is_header_row = (
+            "препарат" in normalized_product
+            and "дозування" in normalized_product
+        ) or (
+            "ліміт" in normalized_limit
+            and "знижка" in normalized_discount
+        )
+
+        # Рядок препарату: є реальна назва/дозування у C.
+        if col_c and not is_header_row:
             program_data["items"].append({
                 "limit": col_b,
                 "product": col_c,
@@ -506,95 +672,36 @@ logger.info(
 )
 
 
-def normalize_program_name(value: str) -> str:
-    """
-    Нормалізує назву програми для порівняння:
-    прибирає лапки, розділові знаки, зайві пробіли та регістр.
-    """
-    text = normalize(value)
-    text = re.sub(r"[«»\"'“”„‟()]", " ", text)
-    text = re.sub(r"[^a-zа-яіїєґ0-9]+", " ", text, flags=re.IGNORECASE)
-    return " ".join(text.split())
-
-
-def program_name_tokens(value: str) -> set[str]:
-    ignored = {
-        "україна",
-        "україни",
-        "програма",
-        "нова",
-        "новий",
-        "закрита",
-        "закрито",
-        "діє",
-        "працює",
-        "до",
-        "від",
-        "для",
-        "та",
-        "і",
-        "з",
-        "в",
-        "на",
-    }
-
-    return {
-        token
-        for token in normalize_program_name(value).split()
-        if len(token) >= 4 and token not in ignored
-    }
-
-
 def find_social_program_conditions(program: str) -> dict[str, Any] | None:
-    normalized_program = normalize_program_name(program)
+    """
+    Знаходить умови навіть якщо у вкладці умов назва трохи відрізняється.
+    Основною вважається назва з основної вкладки.
+    """
+    selected_main = resolve_to_main_program(program, SOCIAL_PROGRAMS) or program
 
-    # 1. Точний збіг після нормалізації.
-    for stored_name, data in SOCIAL_PROGRAM_CONDITIONS.items():
-        stored_normalized = normalize_program_name(
-            data.get("program", stored_name)
-        )
-
-        if stored_normalized == normalized_program:
-            return data
-
-    # 2. Одна назва входить до іншої.
-    for stored_name, data in SOCIAL_PROGRAM_CONDITIONS.items():
-        stored_normalized = normalize_program_name(
-            data.get("program", stored_name)
-        )
-
-        if (
-            stored_normalized
-            and normalized_program
-            and (
-                stored_normalized in normalized_program
-                or normalized_program in stored_normalized
-            )
-        ):
-            return data
-
-    # 3. Пошук за характерними словами.
-    # Наприклад:
-    # «БІОКОДЕКС УКРАЇНА Асакард» ↔ «Асакард».
-    query_tokens = program_name_tokens(program)
     best_match = None
-    best_score = 0
+    best_score = 0.0
 
     for stored_name, data in SOCIAL_PROGRAM_CONDITIONS.items():
         stored_program = data.get("program", stored_name)
-        stored_tokens = program_name_tokens(stored_program)
-        common_tokens = query_tokens & stored_tokens
+        resolved_stored = resolve_to_main_program(
+            stored_program,
+            SOCIAL_PROGRAMS,
+        )
 
-        if not common_tokens:
-            continue
+        if resolved_stored == selected_main:
+            return data
 
-        score = sum(len(token) for token in common_tokens)
+        score = program_similarity(selected_main, stored_program)
 
         if score > best_score:
             best_score = score
             best_match = data
 
-    return best_match
+    if best_score >= 0.55:
+        return best_match
+
+    return None
 
 
 def format_social_program_conditions(program: str) -> str:
@@ -655,7 +762,8 @@ def format_social_program_conditions(program: str) -> str:
 
             if limit_value:
                 lines.append(
-                    f"  📦 Ліміт: {html.escape(limit_value)}"
+                    f"  📦 Ліміт: {html.escape(limit_value)} "
+                    f"{package_word(limit_value)}"
                 )
 
             if discount:
@@ -672,10 +780,9 @@ def format_social_program_conditions(program: str) -> str:
     return "\n".join(lines)
 
 
-SOCIAL_PHARMACY_RECORDS = social_main_records + social_zr_records
-
+# Основний перелік і назви програм беремо ТІЛЬКИ з основної вкладки.
 SOCIAL_PROGRAMS = sorted(
-    set(social_main_programs + social_zr_programs),
+    set(social_main_programs),
     key=program_sort_key,
 )
 
@@ -683,6 +790,44 @@ SOCIAL_PROGRAM_BY_ID: dict[int, str] = {
     index: program
     for index, program in enumerate(SOCIAL_PROGRAMS, start=1)
 }
+
+# Для кожного варіанта назви із ЗР визначаємо основну назву.
+ZR_PROGRAM_TO_MAIN: dict[str, str] = {}
+
+for zr_program in social_zr_programs:
+    main_program = resolve_to_main_program(
+        zr_program,
+        SOCIAL_PROGRAMS,
+    )
+
+    if main_program:
+        ZR_PROGRAM_TO_MAIN[canonical_program_key(zr_program)] = main_program
+    else:
+        logger.warning(
+            "Не вдалося зіставити програму ЗР з основною назвою: %s",
+            zr_program,
+        )
+
+# Записи ЗР, які не вдалося зіставити, не створюють нових програм.
+mapped_zr_records: list[dict[str, Any]] = []
+
+for record in social_zr_records:
+    main_program = ZR_PROGRAM_TO_MAIN.get(
+        canonical_program_key(record["program"])
+    )
+
+    if not main_program:
+        continue
+
+    mapped_record = dict(record)
+    mapped_record["source_program"] = record["program"]
+    mapped_record["program"] = main_program
+    mapped_zr_records.append(mapped_record)
+
+for record in social_main_records:
+    record["source_program"] = record["program"]
+
+SOCIAL_PHARMACY_RECORDS = social_main_records + mapped_zr_records
 
 logger.info(
     "Завантажено %s соціальних програм і %s записів аптек.",
@@ -693,10 +838,15 @@ logger.info(
 
 def social_pharmacies_for_program(program: str) -> list[dict[str, Any]]:
     """Повертає аптеки програми, прибираючи дублікати."""
+    selected_main = resolve_to_main_program(
+        program,
+        SOCIAL_PROGRAMS,
+    ) or program
+
     matching = [
         record
         for record in SOCIAL_PHARMACY_RECORDS
-        if normalize(record["program"]) == normalize(program)
+        if record["program"] == selected_main
     ]
 
     deduplicated: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -777,8 +927,8 @@ def social_programs_page_data(
     programs: list[str] | None = None,
 ) -> tuple[str, InlineKeyboardMarkup]:
     """
-    Перелік програм показується звичайним текстом, тому він вирівняний
-    по лівому краю. Вибір програми — компактними кнопками з номерами.
+    Перелік програм показується звичайним текстом зліва без нумерації.
+    Вибір виконується кнопками з назвами програм.
     """
     source_programs = programs if programs is not None else SOCIAL_PROGRAMS
 
@@ -799,39 +949,27 @@ def social_programs_page_data(
     lines = ["🤝 Оберіть соціальну програму:", ""]
 
     keyboard: list[list[InlineKeyboardButton]] = []
-    number_buttons: list[InlineKeyboardButton] = []
 
-    for local_index, program in enumerate(page_programs, start=1):
-        global_number = start_index + local_index
+    for program in page_programs:
         icon = program_status_icon(program)
-
-        lines.append(
-            f"{global_number}. {icon} {program}"
-        )
+        lines.append(f"{icon} {program}")
 
         program_id = next(
             (
                 identifier
                 for identifier, value in SOCIAL_PROGRAM_BY_ID.items()
-                if value == program
+                if canonical_program_key(value) == canonical_program_key(program)
             ),
             None,
         )
 
         if program_id is not None:
-            number_buttons.append(
+            keyboard.append([
                 InlineKeyboardButton(
-                    str(global_number),
+                    shorten_button(f"{icon} {program}", max_length=60),
                     callback_data=f"social_program:{program_id}",
                 )
-            )
-
-        if len(number_buttons) == 4:
-            keyboard.append(number_buttons)
-            number_buttons = []
-
-    if number_buttons:
-        keyboard.append(number_buttons)
+            ])
 
     navigation: list[InlineKeyboardButton] = []
 
@@ -861,6 +999,12 @@ def social_programs_page_data(
                 callback_data="social_program_search",
             )
         ],
+        [
+            InlineKeyboardButton(
+                "💊 Пошук за препаратом",
+                callback_data="social_medicine_search",
+            )
+        ],
         [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
     ])
 
@@ -874,16 +1018,119 @@ def social_programs_page_data(
 
 
 def search_social_programs_by_name(search_text: str) -> list[str]:
-    query = normalize(search_text)
+    query = normalize_program_name(search_text)
 
     if not query:
         return []
 
-    return [
-        program
-        for program in SOCIAL_PROGRAMS
-        if query in normalize(program)
-    ]
+    matches: dict[str, str] = {}
+
+    for program in SOCIAL_PROGRAMS:
+        normalized_program = normalize_program_name(program)
+
+        if query in normalized_program:
+            matches[canonical_program_key(program)] = program
+
+    return sorted(
+        matches.values(),
+        key=program_sort_key,
+    )
+
+
+def search_programs_by_medicine(
+    search_text: str,
+) -> list[dict[str, Any]]:
+    """
+    Повертає програми та знайдені препарати.
+    Пошук частковий і нечутливий до різниці «і/и».
+    """
+    query = normalize_medicine_name(search_text)
+
+    if not query:
+        return []
+
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for stored_name, condition_data in SOCIAL_PROGRAM_CONDITIONS.items():
+        stored_program = condition_data.get("program", stored_name)
+        main_program = resolve_to_main_program(
+            stored_program,
+            SOCIAL_PROGRAMS,
+        )
+
+        if not main_program:
+            continue
+
+        matching_products: list[str] = []
+
+        for item in condition_data.get("items", []):
+            product = clean_text(item.get("product", ""))
+
+            if query in normalize_medicine_name(product):
+                matching_products.append(product)
+
+        if not matching_products:
+            continue
+
+        program_entry = grouped.setdefault(
+            main_program,
+            {
+                "program": main_program,
+                "products": [],
+            },
+        )
+
+        for product in matching_products:
+            if product not in program_entry["products"]:
+                program_entry["products"].append(product)
+
+    return sorted(
+        grouped.values(),
+        key=lambda item: program_sort_key(item["program"]),
+    )
+
+
+def medicine_search_results_markup(
+    results: list[dict[str, Any]],
+) -> InlineKeyboardMarkup:
+    keyboard: list[list[InlineKeyboardButton]] = []
+
+    for result in results:
+        program = result["program"]
+        program_id = next(
+            (
+                identifier
+                for identifier, value in SOCIAL_PROGRAM_BY_ID.items()
+                if value == program
+            ),
+            None,
+        )
+
+        if program_id is None:
+            continue
+
+        keyboard.append([
+            InlineKeyboardButton(
+                shorten_button(
+                    f"{program_status_icon(program)} {program}",
+                    max_length=60,
+                ),
+                callback_data=f"social_program:{program_id}",
+            )
+        ])
+
+    keyboard.extend([
+        [
+            InlineKeyboardButton(
+                "💊 Новий пошук за препаратом",
+                callback_data="social_medicine_search",
+            )
+        ],
+        [InlineKeyboardButton("⬅️ До переліку програм", callback_data="social_programs")],
+        [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+    ])
+
+    return InlineKeyboardMarkup(keyboard)
 
 
 def selected_social_program(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -1422,6 +1669,19 @@ async def button_handler(
         )
         return
 
+    if data_cb == "social_medicine_search":
+        context.user_data.clear()
+        context.user_data["social_medicine_search_mode"] = True
+
+        await query.edit_message_text(
+            "💊 Введіть назву або частину назви препарату:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data="social_programs")],
+                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+            ]),
+        )
+        return
+
     if data_cb == "social_program_search":
         context.user_data.clear()
         context.user_data["social_program_search_mode"] = True
@@ -1911,6 +2171,55 @@ async def text_handler(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     search_text = clean_text(update.message.text)
+
+    if context.user_data.get("social_medicine_search_mode"):
+        results = search_programs_by_medicine(search_text)
+
+        if not results:
+            await update.message.reply_text(
+                "❌ Препарат не знайдено в соціальних програмах.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💊 Спробувати ще раз", callback_data="social_medicine_search")],
+                    [InlineKeyboardButton("⬅️ До переліку програм", callback_data="social_programs")],
+                    [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+                ]),
+            )
+            return
+
+        context.user_data.pop("social_medicine_search_mode", None)
+        context.user_data["social_medicine_results"] = results
+
+        lines = [
+            f"💊 Результати пошуку: {search_text}",
+            "",
+        ]
+
+        for result in results:
+            program = result["program"]
+            lines.append(
+                f"{program_status_icon(program)} {program}"
+            )
+
+            for product in result["products"][:5]:
+                lines.append(f"• {product}")
+
+            if len(result["products"]) > 5:
+                lines.append(
+                    f"• … ще {len(result['products']) - 5}"
+                )
+
+            lines.append("")
+
+        lines.append(
+            "Оберіть програму, щоб переглянути умови "
+            "або перевірити підключені аптеки."
+        )
+
+        await update.message.reply_text(
+            "\n".join(lines),
+            reply_markup=medicine_search_results_markup(results),
+        )
+        return
 
     if context.user_data.get("social_program_search_mode"):
         matches = search_social_programs_by_name(search_text)
