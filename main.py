@@ -424,22 +424,53 @@ def search_navigation_markup(mode: str) -> InlineKeyboardMarkup:
 
 
 def result_title(record: dict[str, Any]) -> str:
-    title = record["trade_name"] or record["active_substance"] or "Назва не вказана"
 
-    details = [value for value in [record["dosage"], record["package"]] if value]
+    if record["sheet_name"] == MEDICAL_DEVICES_SHEET:
+        text = record.get("dosage", "") or ""
+
+        patterns = [
+            r"Rightest\s+[A-Za-z0-9\-]+\s*\([^)]+\)",
+            r"ELSA\s*\([^)]+\)",
+            r"Contour\s+[A-Za-z0-9+\- ]+\([^)]+\)",
+            r"Accu[- ]?Chek\s+[A-Za-z0-9+\- ]+\([^)]+\)",
+            r"OneTouch\s+[A-Za-z0-9+\- ]+\([^)]+\)",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+
+            if match:
+                return shorten_button(
+                    "🩸 " + match.group(0)
+                )
+
+        title = text or record["trade_name"] or "Назва не вказана"
+
+        return shorten_button(
+            "🩸 " + title
+        )
+
+    title = (
+        record["trade_name"]
+        or record["active_substance"]
+        or "Назва не вказана"
+    )
+
+    details = [
+        value
+        for value in [record["dosage"], record["package"]]
+        if value
+    ]
 
     if details:
         title = f"{title} — {'; '.join(details)}"
 
     if record["sheet_name"] == INSULIN_SHEET:
         prefix = "💉 "
-    elif record["sheet_name"] == MEDICAL_DEVICES_SHEET:
-        prefix = "🩸 "
     else:
         prefix = "💊 "
 
     return shorten_button(prefix + title)
-
 
 async def show_search_results(
     message,
