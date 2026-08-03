@@ -561,11 +561,10 @@ async def button_handler(
         )
         return
 
-    if data_cb in {"drug_search", "insulin", "strips"}:
+if data_cb in {"drug_search", "insulin"}:
         mode = {
             "drug_search": "all",
             "insulin": "insulin",
-            "strips": "strips",
         }[data_cb]
 
         context.user_data["search_mode"] = mode
@@ -575,7 +574,6 @@ async def button_handler(
         prompt = {
             "all": "🔎 Введіть назву препарату або діючу речовину:",
             "insulin": "💉 Введіть назву інсуліну або діючу речовину:",
-            "strips": "🩸 Введіть назву тест-смужок:",
         }[mode]
 
         await query.edit_message_text(
@@ -583,6 +581,74 @@ async def button_handler(
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад", callback_data="drugs")],
                 [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+            ]),
+        )
+        return
+
+    # -------------------------
+    # Перелік тест-смужок
+    # -------------------------
+
+    if data_cb == "strips":
+        strip_records = [
+            record
+            for record in drug_records
+            if record["sheet_name"] == MEDICAL_DEVICES_SHEET
+        ]
+
+        context.user_data["search_mode"] = "strips"
+        context.user_data["search_text"] = "Усі тест-смужки"
+        context.user_data["search_result_ids"] = [
+            record["id"] for record in strip_records
+        ]
+        context.user_data["results_page"] = 0
+
+        if not strip_records:
+            await query.edit_message_text(
+                "🩸 Перелік тест-смужок порожній.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        "🔎 Пошук тест-смужок",
+                        callback_data="strips_search"
+                    )],
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="drugs")],
+                    [InlineKeyboardButton(
+                        "🏠 Головне меню",
+                        callback_data="main_menu"
+                    )],
+                ]),
+            )
+            return
+
+        await show_search_results(
+            query,
+            context,
+            page=0,
+            edit=True,
+        )
+        return
+
+    # -------------------------
+    # Пошук серед тест-смужок
+    # -------------------------
+
+    if data_cb == "strips_search":
+        context.user_data["search_mode"] = "strips"
+        context.user_data.pop("search_result_ids", None)
+        context.user_data.pop("search_text", None)
+
+        await query.edit_message_text(
+            "🩸 Введіть назву тест-смужок:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "📋 Переглянути весь перелік",
+                    callback_data="strips"
+                )],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="drugs")],
+                [InlineKeyboardButton(
+                    "🏠 Головне меню",
+                    callback_data="main_menu"
+                )],
             ]),
         )
         return
