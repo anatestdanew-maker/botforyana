@@ -6,7 +6,6 @@ import logging
 import os
 import re
 from typing import Any
-
 import gspread
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -516,7 +515,7 @@ async def show_search_results(
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.clear()
     await update.message.reply_text(
-        "Оберіть розділ:",
+        "🚨 TEST VERSION 123 🚨",
         reply_markup=main_menu_markup(),
     )
 
