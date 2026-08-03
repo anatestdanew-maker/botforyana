@@ -1330,6 +1330,101 @@ def search_drugs(search_text: str, mode: str = "all") -> list[dict[str, Any]]:
     return results
 
 
+def search_all_available_drugs_flexible(
+    search_text: str,
+) -> list[dict[str, Any]]:
+    """
+    Пошук у всіх підрозділах «Доступних ліків»:
+    звичайні препарати, інсуліни та тест-смужки.
+
+    Використовується для підказки з розділу соціальних програм.
+    Враховує різницю у написанні «і/и».
+    """
+    query_tokens = [
+        token
+        for token in normalize_medicine_name(search_text).split()
+        if token
+    ]
+
+    if not query_tokens:
+        return []
+
+    results: list[dict[str, Any]] = []
+
+    for record in drug_records:
+        searchable_text = normalize_medicine_name(
+            " ".join([
+                record["active_substance"],
+                record["trade_name"],
+                record["form"],
+                record["dosage"],
+                record["package"],
+            ])
+        )
+
+        if all(token in searchable_text for token in query_tokens):
+            results.append(record)
+
+    normalized_query = normalize_medicine_name(search_text)
+
+    results.sort(
+        key=lambda record: (
+            0
+            if normalize_medicine_name(record["trade_name"]) == normalized_query
+            else 1,
+            0
+            if normalize_medicine_name(record["trade_name"]).startswith(
+                normalized_query
+            )
+            else 1,
+            normalize_medicine_name(record["trade_name"]),
+            normalize_medicine_name(record["dosage"]),
+            normalize_medicine_name(record["package"]),
+        )
+    )
+
+    return results
+
+
+def cross_social_programs_markup(
+    results: list[dict[str, Any]],
+) -> InlineKeyboardMarkup:
+    """Кнопки переходу з Доступних ліків до знайдених соцпрограм."""
+    keyboard: list[list[InlineKeyboardButton]] = []
+
+    for result in results:
+        program = result["program"]
+        program_id = next(
+            (
+                identifier
+                for identifier, value in SOCIAL_PROGRAM_BY_ID.items()
+                if value == program
+            ),
+            None,
+        )
+
+        if program_id is None:
+            continue
+
+        keyboard.append([
+            InlineKeyboardButton(
+                shorten_button(
+                    f"🤝 Перейти до програми: {program}",
+                    max_length=60,
+                ),
+                callback_data=f"social_program:{program_id}",
+            )
+        ])
+
+    keyboard.extend([
+        [InlineKeyboardButton("🔎 Новий пошук", callback_data="drug_search")],
+        [InlineKeyboardButton("⬅️ До Доступних ліків", callback_data="drugs")],
+        [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+    ])
+
+    return InlineKeyboardMarkup(keyboard)
+
+
 def find_analogs(record: dict[str, Any]) -> list[dict[str, Any]]:
     active = normalize(record["active_substance"])
     dosage = normalize_dosage(record["dosage"])
@@ -1978,6 +2073,66 @@ async def button_handler(
         )
         return
 
+    if data_cb == "cross_to_available_drugs":
+        result_ids = context.user_data.get(
+            "cross_available_drug_ids",
+            [],
+        )
+        search_text = context.user_data.get(
+            "cross_available_search_text",
+            "",
+        )
+
+        if not result_ids:
+            await query.edit_message_text(
+                "Записи не знайдено. Виконайте пошук ще раз.",
+                reply_markup=main_menu_markup(),
+            )
+            return
+
+        context.user_data["search_mode"] = "all"
+        context.user_data["search_text"] = search_text
+        context.user_data["search_result_ids"] = result_ids
+        context.user_data["results_page"] = 0
+
+        # Якщо результат лише один — одразу відкриваємо картку.
+        if len(result_ids) == 1:
+            record_id = result_ids[0]
+            record = drug_records_by_id.get(record_id)
+
+            if not record:
+                return
+
+            keyboard: list[list[InlineKeyboardButton]] = []
+
+            if record["active_substance"] and record["dosage"]:
+                keyboard.append([
+                    InlineKeyboardButton(
+                        "🔄 Підібрати аналоги",
+                        callback_data=f"analogs:{record_id}",
+                    )
+                ])
+
+            keyboard.extend([
+                [InlineKeyboardButton("⬅️ До Доступних ліків", callback_data="drugs")],
+                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+            ])
+
+            await query.edit_message_text(
+                format_drug_card(record),
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            return
+
+        await show_search_results(
+            query,
+            context,
+            page=0,
+            edit=True,
+        )
+        return
+
     if data_cb.startswith("results_page:"):
         try:
             page = int(data_cb.split(":", 1)[1])
@@ -2176,12 +2331,75 @@ async def text_handler(
         results = search_programs_by_medicine(search_text)
 
         if not results:
+            available_results = search_all_available_drugs_flexible(
+                search_text
+            )
+
+            if available_results:
+                context.user_data[
+                    "cross_available_drug_ids"
+                ] = [
+                    record["id"]
+                    for record in available_results
+                ]
+                context.user_data[
+                    "cross_available_search_text"
+                ] = search_text
+                context.user_data.pop(
+                    "social_medicine_search_mode",
+                    None,
+                )
+
+                await update.message.reply_text(
+                    "💡 Препарат не бере участі "
+                    "у соціальних програмах.\n\n"
+                    "💙 Але він входить до програми "
+                    "«Доступні ліки».",
+                    reply_markup=InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton(
+                                "💙 Перейти до препарату",
+                                callback_data="cross_to_available_drugs",
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                "💊 Новий пошук у соцпрограмах",
+                                callback_data="social_medicine_search",
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                "🏠 Головне меню",
+                                callback_data="main_menu",
+                            )
+                        ],
+                    ]),
+                )
+                return
+
             await update.message.reply_text(
-                "❌ Препарат не знайдено в соціальних програмах.",
+                "❌ Препарат не знайдено ні в програмі "
+                "«Доступні ліки», ні серед соціальних програм.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💊 Спробувати ще раз", callback_data="social_medicine_search")],
-                    [InlineKeyboardButton("⬅️ До переліку програм", callback_data="social_programs")],
-                    [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+                    [
+                        InlineKeyboardButton(
+                            "💊 Спробувати ще раз",
+                            callback_data="social_medicine_search",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ До переліку програм",
+                            callback_data="social_programs",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "🏠 Головне меню",
+                            callback_data="main_menu",
+                        )
+                    ],
                 ]),
             )
             return
@@ -2304,9 +2522,36 @@ async def text_handler(
     results = search_drugs(search_text, mode=mode)
 
     if not results:
+        social_results = search_programs_by_medicine(search_text)
+
+        if social_results:
+            context.user_data.pop("search_mode", None)
+
+            lines = [
+                "💡 Препарат відсутній у програмі "
+                "«Доступні ліки».",
+                "",
+                "🤝 Але він бере участь у соціальній програмі:",
+                "",
+            ]
+
+            for result in social_results:
+                program = result["program"]
+                lines.append(
+                    f"{program_status_icon(program)} {program}"
+                )
+
+            await update.message.reply_text(
+                "\n".join(lines),
+                reply_markup=cross_social_programs_markup(
+                    social_results
+                ),
+            )
+            return
+
         await update.message.reply_text(
-            "❌ Нічого не знайдено.\n\n"
-            "Перевірте написання або введіть частину назви.",
+            "❌ Препарат не знайдено ні в програмі "
+            "«Доступні ліки», ні серед соціальних програм.",
             reply_markup=search_navigation_markup(mode),
         )
         return
