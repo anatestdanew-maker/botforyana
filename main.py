@@ -1152,8 +1152,8 @@ def social_programs_page_data(
     programs: list[str] | None = None,
 ) -> tuple[str, InlineKeyboardMarkup]:
     """
-    Перелік програм показується звичайним текстом зліва без нумерації.
-    Вибір виконується кнопками з назвами програм.
+    Показує лише короткий заголовок і кнопки програм.
+    Текстовий перелік над кнопками не дублюється.
     """
     source_programs = programs if programs is not None else SOCIAL_PROGRAMS
 
@@ -1171,19 +1171,16 @@ def social_programs_page_data(
     )
 
     page_programs = source_programs[start_index:end_index]
-    lines = ["🤝 Оберіть соціальну програму:", ""]
-
     keyboard: list[list[InlineKeyboardButton]] = []
 
     for program in page_programs:
         icon = program_status_icon(program)
-        lines.append(f"{icon} {program}")
 
         program_id = next(
             (
                 identifier
                 for identifier, value in SOCIAL_PROGRAM_BY_ID.items()
-                if canonical_program_key(value) == canonical_program_key(program)
+                if value == program
             ),
             None,
         )
@@ -1191,7 +1188,10 @@ def social_programs_page_data(
         if program_id is not None:
             keyboard.append([
                 InlineKeyboardButton(
-                    shorten_button(f"{icon} {program}", max_length=60),
+                    shorten_button(
+                        f"{icon} {program}",
+                        max_length=60,
+                    ),
                     callback_data=f"social_program:{program_id}",
                 )
             ])
@@ -1240,12 +1240,15 @@ def social_programs_page_data(
     ])
 
     if total_pages > 1:
-        lines.extend([
-            "",
-            f"Сторінка {page + 1} з {total_pages}",
-        ])
+        text = (
+            f"🤝 Оберіть соціальну програму "
+            f"({page + 1}/{total_pages})"
+        )
+    else:
+        text = "🤝 Оберіть соціальну програму"
 
-    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
+    return text, InlineKeyboardMarkup(keyboard)
+
 
 
 def search_social_programs_by_name(search_text: str) -> list[str]:
