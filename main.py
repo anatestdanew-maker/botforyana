@@ -101,6 +101,42 @@ def clean_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value)).strip()
 
 
+def preserve_multiline_text(value: Any) -> str:
+    """Зберігає переноси рядків у відповідях із Google Sheets."""
+    if value is None:
+        return ""
+
+    text = str(value)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Прибираємо зайві пробіли в кожному рядку, але не самі переноси.
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")]
+
+    # Якщо пункти з 📌 були вставлені в один рядок, розділяємо їх.
+    normalized_lines: list[str] = []
+    for line in lines:
+        if not line:
+            normalized_lines.append("")
+            continue
+
+        parts = re.split(r"(?=📌)", line)
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            part = re.sub(r"^📌\s*", "📌 ", part)
+            normalized_lines.append(part)
+
+    # Не допускаємо більше одного порожнього рядка поспіль.
+    result: list[str] = []
+    for line in normalized_lines:
+        if not line and (not result or not result[-1]):
+            continue
+        result.append(line)
+
+    return "\n".join(result).strip()
+
+
 def normalize(value: Any) -> str:
     text = clean_text(value).casefold()
     return text.replace("’", "'").replace("`", "'")
@@ -164,9 +200,15 @@ knowledge_path_to_callback: dict[tuple[str, ...], str] = {}
 def knowledge_row_value(
     source_row: dict[str, Any],
     *possible_headers: str,
+    preserve_lines: bool = False,
 ) -> str:
     for header in possible_headers:
-        value = clean_text(source_row.get(header, ""))
+        raw_value = source_row.get(header, "")
+        value = (
+            preserve_multiline_text(raw_value)
+            if preserve_lines
+            else clean_text(raw_value)
+        )
         if value:
             return value
     return ""
@@ -198,6 +240,7 @@ for source_row in knowledge_rows:
     answer = knowledge_row_value(
         source_row,
         "Відповідь",
+        preserve_lines=True,
     )
 
     if not category or not question:
@@ -2526,7 +2569,7 @@ async def button_handler(
             return
 
         if "__answer__" in node:
-            answer = clean_text(node.get("__answer__", ""))
+            answer = preserve_multiline_text(node.get("__answer__", ""))
 
             parent_path = knowledge_path[:-1]
             back_callback = (
