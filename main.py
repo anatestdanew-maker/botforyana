@@ -660,6 +660,93 @@ async def button_handler(
             )
             return
 
+    # -------------------------
+    # Перелік інсулінів
+    # -------------------------
+
+    if data_cb == "insulin":
+        insulin_records = [
+            record
+            for record in drug_records
+            if record["sheet_name"] == INSULIN_SHEET
+        ]
+
+        context.user_data["search_mode"] = "insulin"
+        context.user_data["search_text"] = "Усі інсуліни"
+        context.user_data["search_result_ids"] = [
+            record["id"] for record in insulin_records
+        ]
+        context.user_data["results_page"] = 0
+
+        if not insulin_records:
+            await query.edit_message_text(
+                "💉 Перелік інсулінів порожній.",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "🔎 Пошук інсуліну",
+                            callback_data="insulin_search"
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ Назад",
+                            callback_data="drugs"
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "🏠 Головне меню",
+                            callback_data="main_menu"
+                        )
+                    ],
+                ]),
+            )
+            return
+
+        await show_search_results(
+            query,
+            context,
+            page=0,
+            edit=True,
+        )
+        return
+
+
+    # -------------------------
+    # Пошук інсуліну
+    # -------------------------
+
+    if data_cb == "insulin_search":
+        context.user_data["search_mode"] = "insulin"
+        context.user_data.pop("search_result_ids", None)
+        context.user_data.pop("search_text", None)
+
+        await query.edit_message_text(
+            "💉 Введіть назву інсуліну:",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "📋 Переглянути весь перелік",
+                        callback_data="insulin"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "⬅️ Назад",
+                        callback_data="drugs"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🏠 Головне меню",
+                        callback_data="main_menu"
+                    )
+                ],
+            ]),
+        )
+        return
+
         await show_search_results(
             query,
             context,
