@@ -35,7 +35,7 @@ INSULIN_SHEET = "РЕЄСТР ІНСУЛІНИ"
 MEDICAL_DEVICES_SHEET = "РЕЄСТР МЕД ВИРОБИ"
 RESULTS_PER_PAGE = 10
 SOCIAL_RESULTS_PER_PAGE = 10
-SOCIAL_PROGRAMS_PER_PAGE = 8
+SOCIAL_PROGRAMS_PER_PAGE = 10
 
 SOCIAL_SPREADSHEET_ID = "197_It5B9M2d5pX2m3igzrQGF3snHs9mzOzPuAQ_SUjU"
 
@@ -47,6 +47,11 @@ SOCIAL_MAIN_SHEET_CANDIDATES = [
 SOCIAL_ZR_SHEET_CANDIDATES = [
     "Аптеки ЗР",
     "ЗР",
+]
+
+SOCIAL_CONDITIONS_SHEET_CANDIDATES = [
+    "Умови соц.програм",
+    "Умови соц програм",
 ]
 
 COLUMN_B = 2
@@ -262,6 +267,9 @@ def get_existing_worksheet(candidates: list[str]):
 
 social_main_sheet = get_existing_worksheet(SOCIAL_MAIN_SHEET_CANDIDATES)
 social_zr_sheet = get_existing_worksheet(SOCIAL_ZR_SHEET_CANDIDATES)
+social_conditions_sheet = get_existing_worksheet(
+    SOCIAL_CONDITIONS_SHEET_CANDIDATES
+)
 
 
 def extract_short_number(department: str, fallback: str = "") -> str:
@@ -407,6 +415,188 @@ social_zr_records, social_zr_programs = load_social_sheet_records(
     street_column=8,
 )
 
+
+def load_social_program_conditions() -> dict[str, dict[str, Any]]:
+    """
+    Читає вкладку «Умови соц.програм».
+
+    Структура за поточним файлом:
+    A — службові позначки «Програма» / «Умови»;
+    B — ліміт упаковок/карток;
+    C — препарат або дозування;
+    D — знижка;
+    K — статус або примітка;
+    L — категорія товарів.
+
+    Об'єднані клітинки не заважають: значення програми береться з першого
+    непорожнього рядка після позначки «Програма», а далі зберігається до
+    наступної програми.
+    """
+    rows = social_conditions_sheet.get_all_values()
+    conditions: dict[str, dict[str, Any]] = {}
+
+    current_program = ""
+    current_status = ""
+    current_category = ""
+
+    for row in rows:
+        label = normalize(value_at(row, 1))
+        col_b = clean_text(value_at(row, 2))
+        col_c = clean_text(value_at(row, 3))
+        col_d = clean_text(value_at(row, 4))
+        col_k = clean_text(value_at(row, 11))
+        col_l = clean_text(value_at(row, 12))
+
+        if label == "програма":
+            program_name = col_b or col_c or col_d
+
+            if program_name:
+                current_program = clean_text(program_name)
+                current_status = col_k
+                current_category = col_l
+
+                conditions.setdefault(
+                    normalize(current_program),
+                    {
+                        "program": current_program,
+                        "status": current_status,
+                        "categories": [],
+                        "items": [],
+                    },
+                )
+            continue
+
+        if not current_program:
+            continue
+
+        program_data = conditions.setdefault(
+            normalize(current_program),
+            {
+                "program": current_program,
+                "status": current_status,
+                "categories": [],
+                "items": [],
+            },
+        )
+
+        if col_k and not program_data.get("status"):
+            program_data["status"] = col_k
+
+        category = col_l or current_category
+
+        if category and category not in program_data["categories"]:
+            program_data["categories"].append(category)
+
+        # Рядок препарату: є назва/дозування у C.
+        if col_c:
+            program_data["items"].append({
+                "limit": col_b,
+                "product": col_c,
+                "discount": col_d,
+                "category": category,
+            })
+
+    return conditions
+
+
+SOCIAL_PROGRAM_CONDITIONS = load_social_program_conditions()
+logger.info(
+    "Завантажено умови для %s соціальних програм.",
+    len(SOCIAL_PROGRAM_CONDITIONS),
+)
+
+
+def find_social_program_conditions(program: str) -> dict[str, Any] | None:
+    normalized_program = normalize(program)
+
+    exact = SOCIAL_PROGRAM_CONDITIONS.get(normalized_program)
+
+    if exact:
+        return exact
+
+    # Запасний варіант для невеликих відмінностей у назвах між вкладками.
+    for stored_name, data in SOCIAL_PROGRAM_CONDITIONS.items():
+        if stored_name in normalized_program or normalized_program in stored_name:
+            return data
+
+    return None
+
+
+def format_social_program_conditions(program: str) -> str:
+    data = find_social_program_conditions(program)
+    lines = [
+        f"{program_status_icon(program)} <b>{html.escape(program)}</b>",
+    ]
+
+    if not data:
+        lines.extend([
+            "",
+            "📝 Умови для цієї програми у вкладці не знайдено.",
+        ])
+        return "\n".join(lines)
+
+    status = clean_text(data.get("status", ""))
+
+    if status:
+        lines.extend([
+            "",
+            f"📅 <b>Статус:</b> {html.escape(status)}",
+        ])
+
+    categories = [
+        clean_text(value)
+        for value in data.get("categories", [])
+        if clean_text(value)
+    ]
+
+    if categories:
+        lines.extend([
+            "",
+            "🏷 <b>Категорії товарів:</b>",
+        ])
+        lines.extend(
+            f"• {html.escape(category)}"
+            for category in categories
+        )
+
+    items = data.get("items", [])
+
+    if items:
+        lines.extend([
+            "",
+            "💊 <b>Умови та препарати:</b>",
+        ])
+
+        for item in items:
+            product = clean_text(item.get("product", ""))
+            limit_value = clean_text(item.get("limit", ""))
+            discount = clean_text(item.get("discount", ""))
+
+            if not product:
+                continue
+
+            lines.append("")
+            lines.append(f"• <b>{html.escape(product)}</b>")
+
+            if limit_value:
+                lines.append(
+                    f"  📦 Ліміт: {html.escape(limit_value)}"
+                )
+
+            if discount:
+                lines.append(
+                    f"  💸 Знижка: {html.escape(discount)}"
+                )
+
+    if len(lines) == 1:
+        lines.extend([
+            "",
+            "📝 Детальні умови не вказані.",
+        ])
+
+    return "\n".join(lines)
+
+
 SOCIAL_PHARMACY_RECORDS = social_main_records + social_zr_records
 
 SOCIAL_PROGRAMS = sorted(
@@ -507,10 +697,19 @@ def filter_social_pharmacies(
     ]
 
 
-def social_programs_markup(page: int = 0) -> InlineKeyboardMarkup:
+def social_programs_page_data(
+    page: int = 0,
+    programs: list[str] | None = None,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """
+    Перелік програм показується звичайним текстом, тому він вирівняний
+    по лівому краю. Вибір програми — компактними кнопками з номерами.
+    """
+    source_programs = programs if programs is not None else SOCIAL_PROGRAMS
+
     total_pages = max(
         1,
-        (len(SOCIAL_PROGRAMS) + SOCIAL_PROGRAMS_PER_PAGE - 1)
+        (len(source_programs) + SOCIAL_PROGRAMS_PER_PAGE - 1)
         // SOCIAL_PROGRAMS_PER_PAGE,
     )
 
@@ -518,24 +717,46 @@ def social_programs_markup(page: int = 0) -> InlineKeyboardMarkup:
     start_index = page * SOCIAL_PROGRAMS_PER_PAGE
     end_index = min(
         start_index + SOCIAL_PROGRAMS_PER_PAGE,
-        len(SOCIAL_PROGRAMS),
+        len(source_programs),
     )
 
-    keyboard: list[list[InlineKeyboardButton]] = []
+    page_programs = source_programs[start_index:end_index]
+    lines = ["🤝 Оберіть соціальну програму:", ""]
 
-    for program_id in range(start_index + 1, end_index + 1):
-        program = SOCIAL_PROGRAM_BY_ID[program_id]
-        title = shorten_button(
-            f"{program_status_icon(program)} {program}",
-            max_length=60,
+    keyboard: list[list[InlineKeyboardButton]] = []
+    number_buttons: list[InlineKeyboardButton] = []
+
+    for local_index, program in enumerate(page_programs, start=1):
+        global_number = start_index + local_index
+        icon = program_status_icon(program)
+
+        lines.append(
+            f"{global_number}. {icon} {program}"
         )
 
-        keyboard.append([
-            InlineKeyboardButton(
-                title,
-                callback_data=f"social_program:{program_id}",
+        program_id = next(
+            (
+                identifier
+                for identifier, value in SOCIAL_PROGRAM_BY_ID.items()
+                if value == program
+            ),
+            None,
+        )
+
+        if program_id is not None:
+            number_buttons.append(
+                InlineKeyboardButton(
+                    str(global_number),
+                    callback_data=f"social_program:{program_id}",
+                )
             )
-        ])
+
+        if len(number_buttons) == 4:
+            keyboard.append(number_buttons)
+            number_buttons = []
+
+    if number_buttons:
+        keyboard.append(number_buttons)
 
     navigation: list[InlineKeyboardButton] = []
 
@@ -547,7 +768,7 @@ def social_programs_markup(page: int = 0) -> InlineKeyboardMarkup:
             )
         )
 
-    if end_index < len(SOCIAL_PROGRAMS):
+    if end_index < len(source_programs):
         navigation.append(
             InlineKeyboardButton(
                 "➡️",
@@ -558,11 +779,36 @@ def social_programs_markup(page: int = 0) -> InlineKeyboardMarkup:
     if navigation:
         keyboard.append(navigation)
 
-    keyboard.append([
-        InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")
+    keyboard.extend([
+        [
+            InlineKeyboardButton(
+                "🔎 Пошук програми за назвою",
+                callback_data="social_program_search",
+            )
+        ],
+        [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
     ])
 
-    return InlineKeyboardMarkup(keyboard)
+    if total_pages > 1:
+        lines.extend([
+            "",
+            f"Сторінка {page + 1} з {total_pages}",
+        ])
+
+    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
+
+
+def search_social_programs_by_name(search_text: str) -> list[str]:
+    query = normalize(search_text)
+
+    if not query:
+        return []
+
+    return [
+        program
+        for program in SOCIAL_PROGRAMS
+        if query in normalize(program)
+    ]
 
 
 def selected_social_program(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -571,12 +817,21 @@ def selected_social_program(context: ContextTypes.DEFAULT_TYPE) -> str:
 
 def social_program_actions_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📝 Умови програми", callback_data="social_conditions")],
+        [InlineKeyboardButton("🏥 Знайти аптеку", callback_data="social_pharmacy_menu")],
+        [InlineKeyboardButton("⬅️ До переліку програм", callback_data="social_programs")],
+        [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+    ])
+
+
+def social_pharmacy_search_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton("🏙 Пошук за містом", callback_data="social_filter:city")],
         [InlineKeyboardButton("🗺 Пошук за областю", callback_data="social_filter:oblast")],
         [InlineKeyboardButton("🛣 Пошук за вулицею", callback_data="social_filter:street")],
         [InlineKeyboardButton("🔢 Пошук за коротким № аптеки", callback_data="social_filter:number")],
         [InlineKeyboardButton("📋 Показати всі аптеки", callback_data="social_filter:all")],
-        [InlineKeyboardButton("⬅️ До переліку програм", callback_data="social_programs")],
+        [InlineKeyboardButton("⬅️ Назад до програми", callback_data="social_program_back")],
         [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
     ])
 
@@ -1070,10 +1325,11 @@ async def button_handler(
 
     if data_cb == "social_programs":
         context.user_data.clear()
+        text, markup = social_programs_page_data(page=0)
 
         await query.edit_message_text(
-            "🤝 Оберіть соціальну програму:",
-            reply_markup=social_programs_markup(page=0),
+            text,
+            reply_markup=markup,
         )
         return
 
@@ -1083,9 +1339,24 @@ async def button_handler(
         except ValueError:
             return
 
+        text, markup = social_programs_page_data(page=page)
+
         await query.edit_message_text(
-            "🤝 Оберіть соціальну програму:",
-            reply_markup=social_programs_markup(page=page),
+            text,
+            reply_markup=markup,
+        )
+        return
+
+    if data_cb == "social_program_search":
+        context.user_data.clear()
+        context.user_data["social_program_search_mode"] = True
+
+        await query.edit_message_text(
+            "🔎 Введіть назву або частину назви соціальної програми:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data="social_programs")],
+                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+            ]),
         )
         return
 
@@ -1105,8 +1376,37 @@ async def button_handler(
 
         await query.edit_message_text(
             f"{program_status_icon(program)} {program}\n\n"
-            "Оберіть спосіб пошуку аптек:",
+            "Оберіть дію:",
             reply_markup=social_program_actions_markup(),
+        )
+        return
+
+    if data_cb == "social_conditions":
+        program = selected_social_program(context)
+
+        if not program:
+            return
+
+        await query.edit_message_text(
+            format_social_program_conditions(program),
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад до програми", callback_data="social_program_back")],
+                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+            ]),
+        )
+        return
+
+    if data_cb == "social_pharmacy_menu":
+        program = selected_social_program(context)
+
+        if not program:
+            return
+
+        await query.edit_message_text(
+            f"{program_status_icon(program)} {program}\n\n"
+            "Оберіть спосіб пошуку аптек:",
+            reply_markup=social_pharmacy_search_markup(),
         )
         return
 
@@ -1114,9 +1414,10 @@ async def button_handler(
         program = selected_social_program(context)
 
         if not program:
+            text, markup = social_programs_page_data(page=0)
             await query.edit_message_text(
-                "🤝 Оберіть соціальну програму:",
-                reply_markup=social_programs_markup(page=0),
+                text,
+                reply_markup=markup,
             )
             return
 
@@ -1126,7 +1427,7 @@ async def button_handler(
 
         await query.edit_message_text(
             f"{program_status_icon(program)} {program}\n\n"
-            "Оберіть спосіб пошуку аптек:",
+            "Оберіть дію:",
             reply_markup=social_program_actions_markup(),
         )
         return
@@ -1535,6 +1836,39 @@ async def text_handler(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     search_text = clean_text(update.message.text)
+
+    if context.user_data.get("social_program_search_mode"):
+        matches = search_social_programs_by_name(search_text)
+
+        if not matches:
+            await update.message.reply_text(
+                "❌ Соціальну програму не знайдено.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔎 Спробувати ще раз", callback_data="social_program_search")],
+                    [InlineKeyboardButton("⬅️ До переліку програм", callback_data="social_programs")],
+                    [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+                ]),
+            )
+            return
+
+        context.user_data.pop("social_program_search_mode", None)
+        context.user_data["social_program_search_results"] = matches
+
+        text, markup = social_programs_page_data(
+            page=0,
+            programs=matches,
+        )
+
+        text = (
+            f"🔎 Результати пошуку: {search_text}\n\n"
+            + "\n".join(text.splitlines()[2:])
+        )
+
+        await update.message.reply_text(
+            text,
+            reply_markup=markup,
+        )
+        return
 
     social_filter_mode = context.user_data.get("social_filter_mode")
     social_program = selected_social_program(context)
