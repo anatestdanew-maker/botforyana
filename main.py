@@ -245,7 +245,13 @@ def search_drugs(search_text: str, mode: str = "all") -> list[dict[str, Any]]:
             continue
 
         searchable_text = normalize(
-            f"{record['active_substance']} {record['trade_name']}"
+            " ".join([
+                record["active_substance"],
+                record["trade_name"],
+                record["form"],
+                record["dosage"],
+                record["package"],
+            ])
         )
 
         if all(token in searchable_text for token in query_tokens):
@@ -309,13 +315,51 @@ def find_analogs(record: dict[str, Any]) -> list[dict[str, Any]]:
     return analogs
 
 
+def medical_device_short_title(record: dict[str, Any]) -> str:
+    """Повертає коротку назву тест-смужок для кнопки та картки."""
+    text = clean_text(record.get("dosage", ""))
+
+    patterns = [
+        r"Rightest\s+[A-Za-z0-9+\- ]+\([^)]+\)",
+        r"ELSA\s*[A-Za-z0-9+\- ]*\([^)]+\)",
+        r"Contour\s+[A-Za-z0-9+\- ]+\([^)]+\)",
+        r"Accu[- ]?Chek\s+[A-Za-z0-9+\- ]+\([^)]+\)",
+        r"OneTouch\s+[A-Za-z0-9+\- ]+\([^)]+\)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return clean_text(match.group(0))
+
+    # Універсальний запасний варіант:
+    # забираємо типовий вступ і залишаємо модель/кількість.
+    shortened = re.sub(
+        r"^Тест[- ]?смужки\s+для\s+контролю\s+рівня\s+глюкози\s+в\s+крові\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    return (
+        clean_text(shortened)
+        or clean_text(record.get("trade_name", ""))
+        or "Назва не вказана"
+    )
+
+
 def format_drug_card(record: dict[str, Any]) -> str:
     sheet_name = record["sheet_name"]
     headers = record["headers"]
     lines: list[str] = []
 
-    title = record["trade_name"] or record["active_substance"] or "Назва не вказана"
-    title_icon = "🩸" if sheet_name == MEDICAL_DEVICES_SHEET else "💊"
+    if sheet_name == MEDICAL_DEVICES_SHEET:
+        title = medical_device_short_title(record)
+        title_icon = "🩸"
+    else:
+        title = record["trade_name"] or record["active_substance"] or "Назва не вказана"
+        title_icon = "💉" if sheet_name == INSULIN_SHEET else "💊"
+
     lines.append(f"{title_icon} <b>{html.escape(title)}</b>")
 
     if sheet_name != MEDICAL_DEVICES_SHEET:
@@ -389,7 +433,6 @@ def format_drug_card(record: dict[str, Any]) -> str:
         format_money(record["copay"]),
     )
 
-    lines.append(f"📄 <i>{html.escape(sheet_name)}</i>")
     return "\n\n".join(lines)
 
 
@@ -412,8 +455,8 @@ def drugs_menu_markup() -> InlineKeyboardMarkup:
 def search_navigation_markup(mode: str) -> InlineKeyboardMarkup:
     callback = {
         "all": "drug_search",
-        "insulin": "insulin",
-        "strips": "strips",
+        "insulin": "insulin_search",
+        "strips": "strips_search",
     }.get(mode, "drug_search")
 
     return InlineKeyboardMarkup([
@@ -424,31 +467,8 @@ def search_navigation_markup(mode: str) -> InlineKeyboardMarkup:
 
 
 def result_title(record: dict[str, Any]) -> str:
-
     if record["sheet_name"] == MEDICAL_DEVICES_SHEET:
-        text = record.get("dosage", "") or ""
-
-        patterns = [
-            r"Rightest\s+[A-Za-z0-9\-]+\s*\([^)]+\)",
-            r"ELSA\s*\([^)]+\)",
-            r"Contour\s+[A-Za-z0-9+\- ]+\([^)]+\)",
-            r"Accu[- ]?Chek\s+[A-Za-z0-9+\- ]+\([^)]+\)",
-            r"OneTouch\s+[A-Za-z0-9+\- ]+\([^)]+\)",
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-
-            if match:
-                return shorten_button(
-                    "🩸 " + match.group(0)
-                )
-
-        title = text or record["trade_name"] or "Назва не вказана"
-
-        return shorten_button(
-            "🩸 " + title
-        )
+        return shorten_button("🩸 " + medical_device_short_title(record))
 
     title = (
         record["trade_name"]
@@ -465,12 +485,9 @@ def result_title(record: dict[str, Any]) -> str:
     if details:
         title = f"{title} — {'; '.join(details)}"
 
-    if record["sheet_name"] == INSULIN_SHEET:
-        prefix = "💉 "
-    else:
-        prefix = "💊 "
-
+    prefix = "💉 " if record["sheet_name"] == INSULIN_SHEET else "💊 "
     return shorten_button(prefix + title)
+
 
 async def show_search_results(
     message,
@@ -519,8 +536,8 @@ async def show_search_results(
 
     new_search_callback = {
         "all": "drug_search",
-        "insulin": "insulin",
-        "strips": "strips",
+        "insulin": "insulin_search",
+        "strips": "strips_search",
     }.get(mode, "drug_search")
 
     keyboard.extend([
@@ -592,80 +609,31 @@ async def button_handler(
         )
         return
 
+
     # -------------------------
-    # Загальний пошук та пошук інсулінів
+    # Загальний пошук ліків
     # -------------------------
 
-    if data_cb in {"drug_search", "insulin"}:
-        mode = {
-            "drug_search": "all",
-            "insulin": "insulin",
-        }[data_cb]
-
-        context.user_data["search_mode"] = mode
+    if data_cb == "drug_search":
+        context.user_data["search_mode"] = "all"
         context.user_data.pop("search_result_ids", None)
         context.user_data.pop("search_text", None)
 
-        if mode == "insulin":
-            prompt = "💉 Введіть назву інсуліну або діючу речовину:"
-        else:
-            prompt = "🔎 Введіть назву препарату або діючу речовину:"
-
         await query.edit_message_text(
-            prompt,
+            "🔎 Введіть назву препарату або діючу речовину:",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад", callback_data="drugs")],
-                [
-                    InlineKeyboardButton(
-                        "🏠 Головне меню",
-                        callback_data="main_menu"
-                    )
-                ],
+                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
             ]),
         )
         return
 
     # -------------------------
-    # Перелік тест-смужок
-    # -------------------------
-
-    if data_cb == "strips":
-        strip_records = [
-            record
-            for record in drug_records
-            if record["sheet_name"] == MEDICAL_DEVICES_SHEET
-        ]
-
-        context.user_data["search_mode"] = "strips"
-        context.user_data["search_text"] = "Усі тест-смужки"
-        context.user_data["search_result_ids"] = [
-            record["id"] for record in strip_records
-        ]
-        context.user_data["results_page"] = 0
-
-        if not strip_records:
-            await query.edit_message_text(
-                "🩸 Перелік тест-смужок порожній.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton(
-                        "🔎 Пошук тест-смужок",
-                        callback_data="strips_search"
-                    )],
-                    [InlineKeyboardButton("⬅️ Назад", callback_data="drugs")],
-                    [InlineKeyboardButton(
-                        "🏠 Головне меню",
-                        callback_data="main_menu"
-                    )],
-                ]),
-            )
-            return
-
-    # -------------------------
-    # Перелік інсулінів
+    # Повний перелік інсулінів
     # -------------------------
 
     if data_cb == "insulin":
-        insulin_records = [
+        records = [
             record
             for record in drug_records
             if record["sheet_name"] == INSULIN_SHEET
@@ -674,47 +642,26 @@ async def button_handler(
         context.user_data["search_mode"] = "insulin"
         context.user_data["search_text"] = "Усі інсуліни"
         context.user_data["search_result_ids"] = [
-            record["id"] for record in insulin_records
+            record["id"] for record in records
         ]
         context.user_data["results_page"] = 0
 
-        if not insulin_records:
+        if not records:
             await query.edit_message_text(
                 "💉 Перелік інсулінів порожній.",
                 reply_markup=InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton(
-                            "🔎 Пошук інсуліну",
-                            callback_data="insulin_search"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "⬅️ Назад",
-                            callback_data="drugs"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "🏠 Головне меню",
-                            callback_data="main_menu"
-                        )
-                    ],
+                    [InlineKeyboardButton("🔎 Пошук інсуліну", callback_data="insulin_search")],
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="drugs")],
+                    [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
                 ]),
             )
             return
 
-        await show_search_results(
-            query,
-            context,
-            page=0,
-            edit=True,
-        )
+        await show_search_results(query, context, page=0, edit=True)
         return
 
-
     # -------------------------
-    # Пошук інсуліну
+    # Пошук серед інсулінів
     # -------------------------
 
     if data_cb == "insulin_search":
@@ -723,36 +670,45 @@ async def button_handler(
         context.user_data.pop("search_text", None)
 
         await query.edit_message_text(
-            "💉 Введіть назву інсуліну:",
+            "💉 Введіть назву інсуліну або діючу речовину:",
             reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(
-                        "📋 Переглянути весь перелік",
-                        callback_data="insulin"
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data="drugs"
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "🏠 Головне меню",
-                        callback_data="main_menu"
-                    )
-                ],
+                [InlineKeyboardButton("📋 Переглянути весь перелік", callback_data="insulin")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="drugs")],
+                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
             ]),
         )
         return
 
-        await show_search_results(
-            query,
-            context,
-            page=0,
-            edit=True,
-        )
+    # -------------------------
+    # Повний перелік тест-смужок
+    # -------------------------
+
+    if data_cb == "strips":
+        records = [
+            record
+            for record in drug_records
+            if record["sheet_name"] == MEDICAL_DEVICES_SHEET
+        ]
+
+        context.user_data["search_mode"] = "strips"
+        context.user_data["search_text"] = "Усі тест-смужки"
+        context.user_data["search_result_ids"] = [
+            record["id"] for record in records
+        ]
+        context.user_data["results_page"] = 0
+
+        if not records:
+            await query.edit_message_text(
+                "🩸 Перелік тест-смужок порожній.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔎 Пошук тест-смужок", callback_data="strips_search")],
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="drugs")],
+                    [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+                ]),
+            )
+            return
+
+        await show_search_results(query, context, page=0, edit=True)
         return
 
     # -------------------------
@@ -765,17 +721,11 @@ async def button_handler(
         context.user_data.pop("search_text", None)
 
         await query.edit_message_text(
-            "🩸 Введіть назву тест-смужок:",
+            "🩸 Введіть назву або модель тест-смужок:",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    "📋 Переглянути весь перелік",
-                    callback_data="strips"
-                )],
+                [InlineKeyboardButton("📋 Переглянути весь перелік", callback_data="strips")],
                 [InlineKeyboardButton("⬅️ Назад", callback_data="drugs")],
-                [InlineKeyboardButton(
-                    "🏠 Головне меню",
-                    callback_data="main_menu"
-                )],
+                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
             ]),
         )
         return
@@ -980,9 +930,13 @@ async def text_handler(
     search_text = clean_text(update.message.text)
 
     if not search_text:
-        await update.message.reply_text(
-            "Введіть назву препарату або діючу речовину."
-        )
+        prompt = {
+            "all": "Введіть назву препарату або діючу речовину.",
+            "insulin": "Введіть назву інсуліну або діючу речовину.",
+            "strips": "Введіть назву або модель тест-смужок.",
+        }.get(mode, "Введіть пошуковий запит.")
+
+        await update.message.reply_text(prompt)
         return
 
     results = search_drugs(search_text, mode=mode)
