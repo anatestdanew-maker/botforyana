@@ -34,6 +34,20 @@ DRUG_SHEET_NAMES = [
 INSULIN_SHEET = "РЕЄСТР ІНСУЛІНИ"
 MEDICAL_DEVICES_SHEET = "РЕЄСТР МЕД ВИРОБИ"
 RESULTS_PER_PAGE = 10
+SOCIAL_RESULTS_PER_PAGE = 10
+SOCIAL_PROGRAMS_PER_PAGE = 8
+
+SOCIAL_SPREADSHEET_ID = "197_It5B9M2d5pX2m3igzrQGF3snHs9mzOzPuAQ_SUjU"
+
+SOCIAL_MAIN_SHEET_CANDIDATES = [
+    "Аптеки учасники оновлено 18.11",
+    "Аптеки учасники оновлено 15.06",
+]
+
+SOCIAL_ZR_SHEET_CANDIDATES = [
+    "Аптеки ЗР",
+    "ЗР",
+]
 
 COLUMN_B = 2
 COLUMN_C = 3
@@ -222,7 +236,474 @@ for sheet_name in DRUG_SHEET_NAMES:
         "records": sheet_records,
     }
 
+
 logger.info("Завантажено %s записів.", len(drug_records))
+
+
+# =========================================================
+# СОЦІАЛЬНІ ПРОГРАМИ
+# =========================================================
+
+social_book = gc.open_by_key(SOCIAL_SPREADSHEET_ID)
+
+
+def get_existing_worksheet(candidates: list[str]):
+    """Повертає першу наявну вкладку із заданого списку."""
+    existing_titles = {worksheet.title for worksheet in social_book.worksheets()}
+
+    for title in candidates:
+        if title in existing_titles:
+            return social_book.worksheet(title)
+
+    raise RuntimeError(
+        "Не знайдено жодної вкладки: " + ", ".join(candidates)
+    )
+
+
+social_main_sheet = get_existing_worksheet(SOCIAL_MAIN_SHEET_CANDIDATES)
+social_zr_sheet = get_existing_worksheet(SOCIAL_ZR_SHEET_CANDIDATES)
+
+
+def extract_short_number(department: str, fallback: str = "") -> str:
+    """Витягує короткий номер із початку поля «Підрозділ»."""
+    match = re.match(r"\s*(\d+)", clean_text(department))
+
+    if match:
+        return match.group(1)
+
+    return clean_text(fallback)
+
+
+def program_status(program_name: str) -> str:
+    """active → closing → closed."""
+    normalized = normalize(program_name)
+
+    if "закрит" in normalized:
+        return "closed"
+
+    if "діє до" in normalized or "працює до" in normalized:
+        return "closing"
+
+    return "active"
+
+
+def program_status_icon(program_name: str) -> str:
+    status = program_status(program_name)
+
+    if status == "closed":
+        return "🔴"
+
+    if status == "closing":
+        return "🟡"
+
+    return "🟢"
+
+
+def program_sort_key(program_name: str) -> tuple[int, str]:
+    order = {
+        "active": 0,
+        "closing": 1,
+        "closed": 2,
+    }
+
+    return (
+        order[program_status(program_name)],
+        normalize(program_name),
+    )
+
+
+def load_social_sheet_records(
+    worksheet,
+    *,
+    is_zr: bool,
+    program_start_column: int,
+    short_number_column: int,
+    department_column: int,
+    oblast_column: int,
+    city_column: int,
+    street_column: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """
+    Читає всі рядки незалежно від фільтрів у Google Sheets.
+    Номери колонок тут 1-based.
+    """
+    rows = worksheet.get_all_values()
+
+    if not rows:
+        return [], []
+
+    headers = [clean_text(value) for value in rows[0]]
+    programs = [
+        clean_text(value)
+        for value in headers[program_start_column - 1:]
+        if clean_text(value)
+    ]
+
+    records: list[dict[str, Any]] = []
+
+    for row_number, row in enumerate(rows[1:], start=2):
+        if not any(clean_text(value) for value in row):
+            continue
+
+        department = value_at(row, department_column)
+        fallback_number = value_at(row, short_number_column)
+        short_number = extract_short_number(department, fallback_number)
+
+        oblast = value_at(row, oblast_column)
+        city = value_at(row, city_column)
+        street = value_at(row, street_column)
+
+        for column_number in range(program_start_column, len(headers) + 1):
+            program = header_at(headers, column_number)
+            participation_value = value_at(row, column_number)
+
+            if not program or not participation_value:
+                continue
+
+            if "відключено" in normalize(participation_value):
+                continue
+
+            records.append({
+                "sheet_name": worksheet.title,
+                "row_number": row_number,
+                "program": program,
+                "participation_value": participation_value,
+                "short_number": short_number,
+                "department": department,
+                "oblast": oblast,
+                "city": city,
+                "street": street,
+                "is_zr": is_zr,
+            })
+
+    return records, programs
+
+
+# Основна вкладка:
+# A — №, B — Підрозділ, D — Область, E — Місто, F — Адреса,
+# програми починаються з I.
+social_main_records, social_main_programs = load_social_sheet_records(
+    social_main_sheet,
+    is_zr=False,
+    program_start_column=9,
+    short_number_column=1,
+    department_column=2,
+    oblast_column=4,
+    city_column=5,
+    street_column=6,
+)
+
+# Вкладка «Аптеки ЗР»:
+# A — №, B — Підрозділ, F — Область, G — Місто, H — Адреса,
+# програми починаються з K.
+social_zr_records, social_zr_programs = load_social_sheet_records(
+    social_zr_sheet,
+    is_zr=True,
+    program_start_column=11,
+    short_number_column=1,
+    department_column=2,
+    oblast_column=6,
+    city_column=7,
+    street_column=8,
+)
+
+SOCIAL_PHARMACY_RECORDS = social_main_records + social_zr_records
+
+SOCIAL_PROGRAMS = sorted(
+    set(social_main_programs + social_zr_programs),
+    key=program_sort_key,
+)
+
+SOCIAL_PROGRAM_BY_ID: dict[int, str] = {
+    index: program
+    for index, program in enumerate(SOCIAL_PROGRAMS, start=1)
+}
+
+logger.info(
+    "Завантажено %s соціальних програм і %s записів аптек.",
+    len(SOCIAL_PROGRAMS),
+    len(SOCIAL_PHARMACY_RECORDS),
+)
+
+
+def social_pharmacies_for_program(program: str) -> list[dict[str, Any]]:
+    """Повертає аптеки програми, прибираючи дублікати."""
+    matching = [
+        record
+        for record in SOCIAL_PHARMACY_RECORDS
+        if normalize(record["program"]) == normalize(program)
+    ]
+
+    deduplicated: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    for record in matching:
+        key = (
+            normalize(record["short_number"]),
+            normalize(record["city"]),
+            normalize(record["street"]),
+        )
+
+        existing = deduplicated.get(key)
+
+        # Якщо та сама аптека є у двох вкладках, зберігаємо позначку ЗР.
+        if existing and record["is_zr"]:
+            merged = dict(existing)
+            merged["is_zr"] = True
+            deduplicated[key] = merged
+        elif not existing:
+            deduplicated[key] = record
+
+    results = list(deduplicated.values())
+
+    results.sort(
+        key=lambda item: (
+            normalize(item["oblast"]),
+            normalize(item["city"]),
+            normalize(item["street"]),
+            normalize(item["short_number"]),
+        )
+    )
+
+    return results
+
+
+def filter_social_pharmacies(
+    program: str,
+    filter_mode: str,
+    search_text: str,
+) -> list[dict[str, Any]]:
+    records = social_pharmacies_for_program(program)
+    query = normalize(search_text)
+
+    if filter_mode == "all":
+        return records
+
+    if not query:
+        return []
+
+    field_by_mode = {
+        "oblast": "oblast",
+        "city": "city",
+        "street": "street",
+        "number": "short_number",
+    }
+
+    field = field_by_mode.get(filter_mode)
+
+    if not field:
+        return []
+
+    if filter_mode == "number":
+        return [
+            record
+            for record in records
+            if normalize(record[field]) == query
+        ]
+
+    return [
+        record
+        for record in records
+        if query in normalize(record[field])
+    ]
+
+
+def social_programs_markup(page: int = 0) -> InlineKeyboardMarkup:
+    total_pages = max(
+        1,
+        (len(SOCIAL_PROGRAMS) + SOCIAL_PROGRAMS_PER_PAGE - 1)
+        // SOCIAL_PROGRAMS_PER_PAGE,
+    )
+
+    page = max(0, min(page, total_pages - 1))
+    start_index = page * SOCIAL_PROGRAMS_PER_PAGE
+    end_index = min(
+        start_index + SOCIAL_PROGRAMS_PER_PAGE,
+        len(SOCIAL_PROGRAMS),
+    )
+
+    keyboard: list[list[InlineKeyboardButton]] = []
+
+    for program_id in range(start_index + 1, end_index + 1):
+        program = SOCIAL_PROGRAM_BY_ID[program_id]
+        title = shorten_button(
+            f"{program_status_icon(program)} {program}",
+            max_length=60,
+        )
+
+        keyboard.append([
+            InlineKeyboardButton(
+                title,
+                callback_data=f"social_program:{program_id}",
+            )
+        ])
+
+    navigation: list[InlineKeyboardButton] = []
+
+    if page > 0:
+        navigation.append(
+            InlineKeyboardButton(
+                "⬅️",
+                callback_data=f"social_programs_page:{page - 1}",
+            )
+        )
+
+    if end_index < len(SOCIAL_PROGRAMS):
+        navigation.append(
+            InlineKeyboardButton(
+                "➡️",
+                callback_data=f"social_programs_page:{page + 1}",
+            )
+        )
+
+    if navigation:
+        keyboard.append(navigation)
+
+    keyboard.append([
+        InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")
+    ])
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+def selected_social_program(context: ContextTypes.DEFAULT_TYPE) -> str:
+    return clean_text(context.user_data.get("social_program", ""))
+
+
+def social_program_actions_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏙 Пошук за містом", callback_data="social_filter:city")],
+        [InlineKeyboardButton("🗺 Пошук за областю", callback_data="social_filter:oblast")],
+        [InlineKeyboardButton("🛣 Пошук за вулицею", callback_data="social_filter:street")],
+        [InlineKeyboardButton("🔢 Пошук за коротким № аптеки", callback_data="social_filter:number")],
+        [InlineKeyboardButton("📋 Показати всі аптеки", callback_data="social_filter:all")],
+        [InlineKeyboardButton("⬅️ До переліку програм", callback_data="social_programs")],
+        [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+    ])
+
+
+def social_results_markup(
+    context: ContextTypes.DEFAULT_TYPE,
+    page: int,
+    total_pages: int,
+) -> InlineKeyboardMarkup:
+    keyboard: list[list[InlineKeyboardButton]] = []
+    navigation: list[InlineKeyboardButton] = []
+
+    if page > 0:
+        navigation.append(
+            InlineKeyboardButton(
+                "⬅️",
+                callback_data=f"social_results_page:{page - 1}",
+            )
+        )
+
+    if page + 1 < total_pages:
+        navigation.append(
+            InlineKeyboardButton(
+                "➡️",
+                callback_data=f"social_results_page:{page + 1}",
+            )
+        )
+
+    if navigation:
+        keyboard.append(navigation)
+
+    keyboard.extend([
+        [InlineKeyboardButton("🔎 Інший пошук", callback_data="social_program_back")],
+        [InlineKeyboardButton("⬅️ До переліку програм", callback_data="social_programs")],
+        [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+    ])
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+def format_social_pharmacy(record: dict[str, Any]) -> str:
+    zr_mark = " 💚 <b>ЗР</b>" if record["is_zr"] else ""
+
+    title = (
+        f"🏥 <b>Аптека №{html.escape(record['short_number'])}</b>{zr_mark}"
+        if record["short_number"]
+        else f"🏥 <b>Аптека</b>{zr_mark}"
+    )
+
+    location_parts = [
+        clean_text(record["oblast"]),
+        clean_text(record["city"]),
+    ]
+    location = ", ".join(part for part in location_parts if part)
+
+    lines = [title]
+
+    if location:
+        lines.append(f"📍 {html.escape(location)}")
+
+    if record["street"]:
+        lines.append(f"🛣 {html.escape(record['street'])}")
+
+    return "\n".join(lines)
+
+
+async def show_social_results(
+    message,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    page: int = 0,
+    edit: bool = False,
+) -> None:
+    results: list[dict[str, Any]] = context.user_data.get(
+        "social_results",
+        [],
+    )
+    program = selected_social_program(context)
+    filter_label = clean_text(
+        context.user_data.get("social_filter_label", "")
+    )
+
+    total = len(results)
+    total_pages = max(
+        1,
+        (total + SOCIAL_RESULTS_PER_PAGE - 1)
+        // SOCIAL_RESULTS_PER_PAGE,
+    )
+
+    page = max(0, min(page, total_pages - 1))
+    context.user_data["social_results_page"] = page
+
+    start_index = page * SOCIAL_RESULTS_PER_PAGE
+    end_index = min(start_index + SOCIAL_RESULTS_PER_PAGE, total)
+
+    lines = [
+        f"🤝 <b>{html.escape(program)}</b>",
+    ]
+
+    if filter_label:
+        lines.append(f"🔎 {html.escape(filter_label)}")
+
+    lines.append(f"Знайдено аптек: {total}")
+
+    for record in results[start_index:end_index]:
+        lines.append("")
+        lines.append(format_social_pharmacy(record))
+
+    if total_pages > 1:
+        lines.append("")
+        lines.append(f"Сторінка {page + 1} з {total_pages}")
+
+    text = "\n".join(lines)
+    markup = social_results_markup(context, page, total_pages)
+
+    if edit:
+        await message.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=markup,
+        )
+    else:
+        await message.reply_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=markup,
+        )
 
 
 def search_drugs(search_text: str, mode: str = "all") -> list[dict[str, Any]]:
@@ -442,6 +923,7 @@ def main_menu_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📚 База знань", callback_data="knowledge")],
         [InlineKeyboardButton("💊 Доступні ліки", callback_data="drugs")],
+        [InlineKeyboardButton("🤝 Соціальні програми", callback_data="social_programs")],
     ])
 
 
@@ -583,6 +1065,134 @@ async def button_handler(
         await query.edit_message_text(
             "Оберіть розділ:",
             reply_markup=main_menu_markup(),
+        )
+        return
+
+    if data_cb == "social_programs":
+        context.user_data.clear()
+
+        await query.edit_message_text(
+            "🤝 Оберіть соціальну програму:",
+            reply_markup=social_programs_markup(page=0),
+        )
+        return
+
+    if data_cb.startswith("social_programs_page:"):
+        try:
+            page = int(data_cb.split(":", 1)[1])
+        except ValueError:
+            return
+
+        await query.edit_message_text(
+            "🤝 Оберіть соціальну програму:",
+            reply_markup=social_programs_markup(page=page),
+        )
+        return
+
+    if data_cb.startswith("social_program:"):
+        try:
+            program_id = int(data_cb.split(":", 1)[1])
+        except ValueError:
+            return
+
+        program = SOCIAL_PROGRAM_BY_ID.get(program_id)
+
+        if not program:
+            return
+
+        context.user_data.clear()
+        context.user_data["social_program"] = program
+
+        await query.edit_message_text(
+            f"{program_status_icon(program)} {program}\n\n"
+            "Оберіть спосіб пошуку аптек:",
+            reply_markup=social_program_actions_markup(),
+        )
+        return
+
+    if data_cb == "social_program_back":
+        program = selected_social_program(context)
+
+        if not program:
+            await query.edit_message_text(
+                "🤝 Оберіть соціальну програму:",
+                reply_markup=social_programs_markup(page=0),
+            )
+            return
+
+        context.user_data.pop("social_filter_mode", None)
+        context.user_data.pop("social_results", None)
+        context.user_data.pop("social_filter_label", None)
+
+        await query.edit_message_text(
+            f"{program_status_icon(program)} {program}\n\n"
+            "Оберіть спосіб пошуку аптек:",
+            reply_markup=social_program_actions_markup(),
+        )
+        return
+
+    if data_cb.startswith("social_filter:"):
+        filter_mode = data_cb.split(":", 1)[1]
+        program = selected_social_program(context)
+
+        if not program:
+            return
+
+        if filter_mode == "all":
+            results = filter_social_pharmacies(
+                program,
+                "all",
+                "",
+            )
+
+            context.user_data["social_results"] = results
+            context.user_data["social_filter_label"] = "Усі аптеки"
+            context.user_data["social_results_page"] = 0
+
+            await show_social_results(
+                query,
+                context,
+                page=0,
+                edit=True,
+            )
+            return
+
+        prompts = {
+            "city": "🏙 Введіть назву міста:",
+            "oblast": "🗺 Введіть назву області:",
+            "street": "🛣 Введіть назву вулиці:",
+            "number": "🔢 Введіть короткий номер аптеки:",
+        }
+
+        prompt = prompts.get(filter_mode)
+
+        if not prompt:
+            return
+
+        context.user_data["social_filter_mode"] = filter_mode
+        context.user_data.pop("social_results", None)
+        context.user_data.pop("social_filter_label", None)
+
+        await query.edit_message_text(
+            prompt,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data="social_program_back")],
+                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+            ]),
+        )
+        return
+
+    if data_cb.startswith("social_results_page:"):
+        try:
+            page = int(data_cb.split(":", 1)[1])
+        except ValueError:
+            return
+
+        await show_social_results(
+            query,
+            context,
+            page=page,
+            edit=True,
         )
         return
 
@@ -924,12 +1534,44 @@ async def text_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
+    search_text = clean_text(update.message.text)
+
+    social_filter_mode = context.user_data.get("social_filter_mode")
+    social_program = selected_social_program(context)
+
+    if social_filter_mode and social_program:
+        results = filter_social_pharmacies(
+            social_program,
+            social_filter_mode,
+            search_text,
+        )
+
+        labels = {
+            "city": f"Місто: {search_text}",
+            "oblast": f"Область: {search_text}",
+            "street": f"Вулиця: {search_text}",
+            "number": f"Короткий № аптеки: {search_text}",
+        }
+
+        context.user_data["social_results"] = results
+        context.user_data["social_filter_label"] = labels.get(
+            social_filter_mode,
+            search_text,
+        )
+        context.user_data["social_results_page"] = 0
+
+        await show_social_results(
+            update.message,
+            context,
+            page=0,
+            edit=False,
+        )
+        return
+
     mode = context.user_data.get("search_mode")
 
     if not mode:
         return
-
-    search_text = clean_text(update.message.text)
 
     if not search_text:
         prompt = {
