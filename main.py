@@ -561,30 +561,6 @@ async def button_handler(
         )
         return
 
-if data_cb in {"drug_search", "insulin"}:
-        mode = {
-            "drug_search": "all",
-            "insulin": "insulin",
-        }[data_cb]
-
-        context.user_data["search_mode"] = mode
-        context.user_data.pop("search_result_ids", None)
-        context.user_data.pop("search_text", None)
-
-        prompt = {
-            "all": "🔎 Введіть назву препарату або діючу речовину:",
-            "insulin": "💉 Введіть назву інсуліну або діючу речовину:",
-        }[mode]
-
-        await query.edit_message_text(
-            prompt,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад", callback_data="drugs")],
-                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
-            ]),
-        )
-        return
-
     # -------------------------
     # Перелік тест-смужок
     # -------------------------
