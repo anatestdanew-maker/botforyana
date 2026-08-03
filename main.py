@@ -152,37 +152,186 @@ def append_field(lines: list[str], icon: str, label: str, value: str) -> None:
 knowledge_sheet = gc.open(KNOWLEDGE_SPREADSHEET).sheet1
 knowledge_rows = knowledge_sheet.get_all_records()
 
-knowledge_tree: dict[str, dict[str, dict[str, str]]] = {}
+# Універсальна структура:
+# Група (необов'язково) → Категорія → Підкатегорія (необов'язково)
+# → Питання → Відповідь.
+knowledge_tree: dict[str, Any] = {}
+knowledge_entries: list[dict[str, str]] = []
+knowledge_callback_to_path: dict[str, tuple[str, ...]] = {}
+knowledge_path_to_callback: dict[tuple[str, ...], str] = {}
+
+
+def knowledge_row_value(
+    source_row: dict[str, Any],
+    *possible_headers: str,
+) -> str:
+    for header in possible_headers:
+        value = clean_text(source_row.get(header, ""))
+        if value:
+            return value
+    return ""
+
 
 for source_row in knowledge_rows:
-    category = clean_text(source_row.get("Категорія", ""))
-    subtopic = clean_text(source_row.get("Підтема", ""))
-    question = clean_text(source_row.get("Питання", ""))
-    answer = clean_text(source_row.get("Відповідь", ""))
+    group = knowledge_row_value(
+        source_row,
+        "Група",
+        "Рівень 1",
+        "Меню",
+    )
+    category = knowledge_row_value(
+        source_row,
+        "Категорія",
+        "Рівень 2",
+    )
+    subcategory = knowledge_row_value(
+        source_row,
+        "Підкатегорія",
+        "Підтема",
+        "Рівень 3",
+    )
+    question = knowledge_row_value(
+        source_row,
+        "Питання",
+        "Запитання",
+    )
+    answer = knowledge_row_value(
+        source_row,
+        "Відповідь",
+    )
 
-    if not category or not subtopic or not question:
+    if not category or not question:
         continue
 
-    knowledge_tree.setdefault(category, {})
-    knowledge_tree[category].setdefault(subtopic, {})
-    knowledge_tree[category][subtopic][question] = answer
+    entry = {
+        "group": group,
+        "category": category,
+        "subcategory": subcategory,
+        "question": question,
+        "answer": answer,
+    }
+    knowledge_entries.append(entry)
 
-knowledge_callbacks: dict[str, tuple[str, ...]] = {}
+    path_parts = [
+        value
+        for value in [group, category, subcategory, question]
+        if value
+    ]
 
-for category, subtopics in knowledge_tree.items():
-    knowledge_callbacks[safe_callback(category)] = ("category", category)
+    node = knowledge_tree
 
-    for subtopic, questions in subtopics.items():
-        knowledge_callbacks[safe_callback(f"{category}|{subtopic}")] = (
-            "subtopic",
-            category,
-            subtopic,
+    for part in path_parts[:-1]:
+        node = node.setdefault(part, {})
+
+    node[path_parts[-1]] = {
+        "__answer__": answer or "Відповідь не вказана."
+    }
+
+
+def register_knowledge_callbacks(
+    node: dict[str, Any],
+    path: tuple[str, ...] = (),
+) -> None:
+    for title, child in node.items():
+        if title == "__answer__":
+            continue
+
+        child_path = path + (title,)
+        callback = f"kb:{len(knowledge_callback_to_path) + 1}"
+
+        knowledge_callback_to_path[callback] = child_path
+        knowledge_path_to_callback[child_path] = callback
+
+        if isinstance(child, dict) and "__answer__" not in child:
+            register_knowledge_callbacks(child, child_path)
+
+
+register_knowledge_callbacks(knowledge_tree)
+
+
+def knowledge_node(path: tuple[str, ...]) -> dict[str, Any] | None:
+    node: Any = knowledge_tree
+
+    for part in path:
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+
+    return node if isinstance(node, dict) else None
+
+
+def knowledge_menu_markup(
+    path: tuple[str, ...] = (),
+) -> InlineKeyboardMarkup:
+    node = knowledge_node(path) if path else knowledge_tree
+    keyboard: list[list[InlineKeyboardButton]] = []
+
+    if node:
+        for title, child in node.items():
+            if title == "__answer__":
+                continue
+
+            child_path = path + (title,)
+            callback = knowledge_path_to_callback.get(child_path)
+
+            if callback:
+                keyboard.append([
+                    InlineKeyboardButton(
+                        shorten_button(title, max_length=60),
+                        callback_data=callback,
+                    )
+                ])
+
+    if path:
+        parent_path = path[:-1]
+        back_callback = (
+            knowledge_path_to_callback.get(parent_path)
+            if parent_path
+            else "knowledge"
         )
+        keyboard.append([
+            InlineKeyboardButton(
+                "⬅️ Назад",
+                callback_data=back_callback or "knowledge",
+            )
+        ])
+    else:
+        keyboard.append([
+            InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")
+        ])
 
-        for question in questions:
-            knowledge_callbacks[
-                safe_callback(f"{category}|{subtopic}|{question}")
-            ] = ("question", category, subtopic, question)
+    keyboard.append([
+        InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")
+    ])
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+def find_knowledge_answer(
+    *,
+    category_contains: str,
+    question_contains: str,
+) -> str:
+    category_query = normalize(category_contains)
+    question_query = normalize(question_contains)
+
+    for entry in knowledge_entries:
+        category_text = normalize(
+            " ".join([
+                entry["group"],
+                entry["category"],
+                entry["subcategory"],
+            ])
+        )
+        question_text = normalize(entry["question"])
+
+        if (
+            category_query in category_text
+            and question_query in question_text
+        ):
+            return entry["answer"]
+
+    return ""
 
 
 drug_book = gc.open(DRUG_SPREADSHEET)
@@ -433,6 +582,40 @@ def package_word(value: str) -> str:
         return "упаковки"
 
     return "упаковок"
+
+
+ZR_PROGRAM_ALIASES = {
+    'abbott card разом гептрали': 'ЕБОТТ КАРД ГЕПТРАЛ',
+    'астразенека терапія плюс': 'АстраЗенека "ТЕРАПІЯПЛЮС"',
+    'мовіхелс свобода руху з мові хелс': 'МовіХелс "СВОБОДА РУХУ З МОВІ ХЕЛС"',
+    'астразенека карта надії': 'АстраЗенека "КАРТА НАДІЇ"',
+    'ново нордіск розумний старт': 'Ново Нордіск "РОЗУМНИЙ СТАРТ"',
+    'геолік захисти своє майбутнє': 'Геолік "ЗАХИСТИ СВОЄ МАЙБУТНЄ"',
+    'ромфарм допомога суглобам': 'Ромфарм "ДОПОМОГА СУГЛОБАМ"',
+    'рош за межі обмежень за межі рс': 'Рош "З НАДІЄЮ В МАЙБУТНЄ"',
+    'артеріум ключ до життя': 'Артеріум "КЛЮЧ ДО ЖИТТЯ" діє до 31.07.2026',
+    'мсд ключ надії': 'МСД "КЛЮЧ НАДІЇ"',
+    'дарниця шлях до здорового серця': 'Дарниця "ШЛЯХ ДО ЗДОРОВОГО СЕРЦЯ" (Ефез) закрита програма',
+    'кусум фарм magic card': 'Кусум Фарм "MAGIC CARD" НОВИЙ закрита програма',
+    'мобіль медикал збережемо здоров я разом': 'Мобіль Медикал "ЗБЕРЕЖЕМО ЗДОРОВ’Я РАЗОМ"',
+    'астеллас червона калина': 'Астеллас "ЧЕРВОНА КАЛИНА"',
+    'дарниця доступний захист печінки і жовчного міхура': 'Дарниця "ДОСТУПНИЙ ЗАХИСТ ПЕЧІНКИ І ЖОВЧНОГО МІХУРА" (Урсохол)',
+    'біокодекс асакард': 'БІОКОДЕКС УКРАЇНА "Асакард"',
+    'дарниця вільний рух без болю': 'Дарниця "Вільний рух без болю"',
+    'дарниця опануйте свій тиск': 'Дарниця "Опануйте свій тиск" закрита програма',
+    'дарниця мігрень не вирок': 'Дарниця "Мігрень не вирок" (Ельптан)',
+    'життя без болі при подагрі': '"Життя без болю при подагрі" (Єврофеб)',
+    'допомога пацієнту бхфз діє до 1 07 2026': 'Допомога пацієнту (БХФЗ) діє до 01.07.2026',
+    'дарниця neurocard альфахолін і цитімакс': 'Дарниця "NEUROCARD" (Альфахолін і цитімакс)',
+    'моменти життя від тева': 'Моменти життя від Тева  Аджові',
+    'пакунок малюка': 'Пакунок малюка (ЗР)',
+    'відновлення якості життя альфанормікс': 'Відновлення якості життя (АльфаНормікс)',
+    'шлях до відновлення очей хілокеа': 'Шлях до відновлення очей (ХілоКеа) ЗАКРИТА',
+}
+
+
+def zr_alias_key(value: str) -> str:
+    return normalize_program_name(value)
 
 
 def program_status(program_name: str) -> str:
@@ -791,41 +974,40 @@ SOCIAL_PROGRAM_BY_ID: dict[int, str] = {
     for index, program in enumerate(SOCIAL_PROGRAMS, start=1)
 }
 
-# Для кожного варіанта назви із ЗР визначаємо основну назву.
-ZR_PROGRAM_TO_MAIN: dict[str, str] = {}
+# Назви з вкладки ЗР зіставляємо вручну.
+# Основні назви беремо з основної вкладки, крім спеціальної
+# програми «Пакунок малюка (ЗР)».
+if "Пакунок малюка (ЗР)" not in SOCIAL_PROGRAMS:
+    SOCIAL_PROGRAMS.append("Пакунок малюка (ЗР)")
+    SOCIAL_PROGRAMS.sort(key=program_sort_key)
 
-for zr_program in social_zr_programs:
-    main_program = resolve_to_main_program(
-        zr_program,
-        SOCIAL_PROGRAMS,
-    )
+SOCIAL_PROGRAM_BY_ID = {
+    index: program
+    for index, program in enumerate(SOCIAL_PROGRAMS, start=1)
+}
 
-    if main_program:
-        ZR_PROGRAM_TO_MAIN[canonical_program_key(zr_program)] = main_program
-    else:
-        logger.warning(
-            "Не вдалося зіставити програму ЗР з основною назвою: %s",
-            zr_program,
-        )
-
-# Записи ЗР, які не вдалося зіставити, не створюють нових програм.
 mapped_zr_records: list[dict[str, Any]] = []
 
 for record in social_zr_records:
-    main_program = ZR_PROGRAM_TO_MAIN.get(
-        canonical_program_key(record["program"])
-    )
+    alias_key = zr_alias_key(record["program"])
+    main_program = ZR_PROGRAM_ALIASES.get(alias_key)
 
     if not main_program:
+        logger.warning(
+            "Немає ручного відповідника для програми ЗР: %s",
+            record["program"],
+        )
         continue
 
     mapped_record = dict(record)
     mapped_record["source_program"] = record["program"]
     mapped_record["program"] = main_program
+    mapped_record["is_zr"] = True
     mapped_zr_records.append(mapped_record)
 
 for record in social_main_records:
     record["source_program"] = record["program"]
+    record["is_zr"] = False
 
 SOCIAL_PHARMACY_RECORDS = social_main_records + mapped_zr_records
 
@@ -1005,6 +1187,12 @@ def social_programs_page_data(
                 callback_data="social_medicine_search",
             )
         ],
+        [
+            InlineKeyboardButton(
+                "📌 Загальні умови",
+                callback_data="social_general_conditions",
+            )
+        ],
         [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
     ])
 
@@ -1041,7 +1229,7 @@ def search_programs_by_medicine(
     search_text: str,
 ) -> list[dict[str, Any]]:
     """
-    Повертає програми та знайдені препарати.
+    Повертає програми та повні умови знайдених препаратів.
     Пошук частковий і нечутливий до різниці «і/и».
     """
     query = normalize_medicine_name(search_text)
@@ -1061,28 +1249,40 @@ def search_programs_by_medicine(
         if not main_program:
             continue
 
-        matching_products: list[str] = []
+        matching_items: list[dict[str, str]] = []
 
         for item in condition_data.get("items", []):
             product = clean_text(item.get("product", ""))
 
             if query in normalize_medicine_name(product):
-                matching_products.append(product)
+                matching_items.append({
+                    "product": product,
+                    "limit": clean_text(item.get("limit", "")),
+                    "discount": clean_text(item.get("discount", "")),
+                    "category": clean_text(item.get("category", "")),
+                })
 
-        if not matching_products:
+        if not matching_items:
             continue
 
         program_entry = grouped.setdefault(
             main_program,
             {
                 "program": main_program,
-                "products": [],
+                "items": [],
             },
         )
 
-        for product in matching_products:
-            if product not in program_entry["products"]:
-                program_entry["products"].append(product)
+        existing_products = {
+            normalize_medicine_name(item["product"])
+            for item in program_entry["items"]
+        }
+
+        for item in matching_items:
+            item_key = normalize_medicine_name(item["product"])
+            if item_key not in existing_products:
+                program_entry["items"].append(item)
+                existing_products.add(item_key)
 
     return sorted(
         grouped.values(),
@@ -1112,10 +1312,10 @@ def medicine_search_results_markup(
         keyboard.append([
             InlineKeyboardButton(
                 shorten_button(
-                    f"{program_status_icon(program)} {program}",
+                    f"🏥 Знайти аптеки: {program}",
                     max_length=60,
                 ),
-                callback_data=f"social_program:{program_id}",
+                callback_data=f"social_medicine_pharmacies:{program_id}",
             )
         ])
 
@@ -1604,6 +1804,8 @@ def drugs_menu_markup() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔎 Пошук", callback_data="drug_search")],
         [InlineKeyboardButton("💉 Інсуліни", callback_data="insulin")],
         [InlineKeyboardButton("🩸 Тест-смужки", callback_data="strips")],
+        [InlineKeyboardButton("📌 Загальні умови", callback_data="drug_general_conditions")],
+        [InlineKeyboardButton("🤖 Офіційний бот МОЗ", url="https://t.me/SpytaiGrytsia_bot")],
         [InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")],
     ])
 
@@ -1777,6 +1979,56 @@ async def button_handler(
         )
         return
 
+    if data_cb == "social_general_conditions":
+        answer = find_knowledge_answer(
+            category_contains="Соціальні програми Карткові соц програми",
+            question_contains="Умови",
+        )
+
+        if not answer:
+            answer = (
+                "📌 Перевіряємо наявність товару в обраній клієнтом аптеці\n"
+                "📌 Перевіряємо, чи аптека підключена до програми\n"
+                "📌 Відпуск тільки повними упаковками\n"
+                "📌 Не діє на інтернет-бронювання\n"
+                "📌 Знижка рахується від аптечної вартості, яку клієнт "
+                "може дізнатися тільки в аптеці\n"
+                "📌 Рецепт/картку виписує тільки лікар\n"
+                "📌 В аптеці відпуск — 1 препарат у чек\n"
+                "📌 Якщо в аптеці немає світла або інтернету, "
+                "препарат відпустити не зможуть"
+            )
+
+        await query.edit_message_text(
+            "🤝 Загальні умови соціальних програм\n\n" + answer,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data="social_programs")],
+                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+            ]),
+        )
+        return
+
+    if data_cb.startswith("social_medicine_pharmacies:"):
+        try:
+            program_id = int(data_cb.split(":", 1)[1])
+        except ValueError:
+            return
+
+        program = SOCIAL_PROGRAM_BY_ID.get(program_id)
+
+        if not program:
+            return
+
+        context.user_data["social_program"] = program
+        context.user_data.pop("social_filter_mode", None)
+
+        await query.edit_message_text(
+            f"{program_status_icon(program)} {program}\n\n"
+            "Оберіть спосіб пошуку аптек:",
+            reply_markup=social_pharmacy_search_markup(),
+        )
+        return
+
     if data_cb == "social_program_search":
         context.user_data.clear()
         context.user_data["social_program_search_mode"] = True
@@ -1930,17 +2182,9 @@ async def button_handler(
     if data_cb == "knowledge":
         context.user_data.pop("search_mode", None)
 
-        keyboard = [
-            [InlineKeyboardButton(category, callback_data=safe_callback(category))]
-            for category in knowledge_tree
-        ]
-        keyboard.append([
-            InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")
-        ])
-
         await query.edit_message_text(
-            "📚 Оберіть категорію:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
+            "📚 Оберіть розділ:",
+            reply_markup=knowledge_menu_markup(),
         )
         return
 
@@ -1956,6 +2200,42 @@ async def button_handler(
     # -------------------------
     # Загальний пошук ліків
     # -------------------------
+
+    if data_cb == "drug_general_conditions":
+        answer = find_knowledge_answer(
+            category_contains="Доступні ліки Реімбурсація",
+            question_contains="Умови",
+        )
+
+        if not answer:
+            answer = (
+                "📌 Уточнюємо, яка кількість вказана в рецепті\n"
+                "📌 Якщо в рецепті 3 упаковки, можна відпустити тільки "
+                "3 упаковки; якщо товару недостатньо, рецепт погасити неможливо\n"
+                "📌 Відпуск тільки повними упаковками\n"
+                "📌 Рецепт виписує тільки лікар\n"
+                "📌 У SMS надходить номер електронного рецепта "
+                "(16 символів) і код підтвердження\n"
+                "📌 Оператор не має доступу до перевірки рецепта — "
+                "це можливо лише в аптеці\n"
+                "📌 Рецепт можна перевірити через лікаря, Дію або Helsi; "
+                "консультацію щодо сторонніх застосунків не надаємо\n"
+                "📌 Не діє на інтернет-бронювання\n"
+                "📌 Усі аптеки підключені до програми"
+            )
+
+        await query.edit_message_text(
+            "💊 Загальні умови програми «Доступні ліки»\n\n" + answer,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "🤖 Офіційний бот МОЗ",
+                    url="https://t.me/SpytaiGrytsia_bot",
+                )],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="drugs")],
+                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+            ]),
+        )
+        return
 
     if data_cb == "drug_search":
         context.user_data["search_mode"] = "all"
@@ -2237,88 +2517,44 @@ async def button_handler(
         await show_search_results(query, context, page=0, edit=True)
         return
 
-    knowledge_action = knowledge_callbacks.get(data_cb)
+    knowledge_path = knowledge_callback_to_path.get(data_cb)
 
-    if knowledge_action:
-        action_type = knowledge_action[0]
+    if knowledge_path:
+        node = knowledge_node(knowledge_path)
 
-        if action_type == "category":
-            category = knowledge_action[1]
-
-            keyboard = [
-                [
-                    InlineKeyboardButton(
-                        subtopic,
-                        callback_data=safe_callback(f"{category}|{subtopic}"),
-                    )
-                ]
-                for subtopic in knowledge_tree[category]
-            ]
-            keyboard.extend([
-                [InlineKeyboardButton("⬅️ Назад", callback_data="knowledge")],
-                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
-            ])
-
-            await query.edit_message_text(
-                f"Категорія: {category}\nОберіть підтему:",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-            )
+        if not node:
             return
 
-        if action_type == "subtopic":
-            category = knowledge_action[1]
-            subtopic = knowledge_action[2]
+        if "__answer__" in node:
+            answer = clean_text(node.get("__answer__", ""))
 
-            keyboard = [
-                [
-                    InlineKeyboardButton(
-                        question,
-                        callback_data=safe_callback(
-                            f"{category}|{subtopic}|{question}"
-                        ),
-                    )
-                ]
-                for question in knowledge_tree[category][subtopic]
-            ]
-            keyboard.extend([
-                [
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data=safe_callback(category),
-                    )
-                ],
-                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
-            ])
-
-            await query.edit_message_text(
-                f"Підтема: {subtopic}\nОберіть питання:",
-                reply_markup=InlineKeyboardMarkup(keyboard),
+            parent_path = knowledge_path[:-1]
+            back_callback = (
+                knowledge_path_to_callback.get(parent_path)
+                if parent_path
+                else "knowledge"
             )
-            return
-
-        if action_type == "question":
-            category = knowledge_action[1]
-            subtopic = knowledge_action[2]
-            question = knowledge_action[3]
-            answer = knowledge_tree[category][subtopic].get(
-                question,
-                "Відповідь не вказана.",
-            )
-
-            keyboard = [
-                [
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data=safe_callback(f"{category}|{subtopic}"),
-                    )
-                ],
-                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
-            ]
 
             await query.edit_message_text(
                 answer or "Відповідь не вказана.",
-                reply_markup=InlineKeyboardMarkup(keyboard),
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ Назад",
+                            callback_data=back_callback or "knowledge",
+                        )
+                    ],
+                    [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+                ]),
             )
+            return
+
+        await query.edit_message_text(
+            f"📚 {knowledge_path[-1]}\n\nОберіть пункт:",
+            reply_markup=knowledge_menu_markup(knowledge_path),
+        )
+        return
+
 
 
 async def text_handler(
@@ -2408,30 +2644,37 @@ async def text_handler(
         context.user_data["social_medicine_results"] = results
 
         lines = [
-            f"💊 Результати пошуку: {search_text}",
+            f"💊 {search_text}",
             "",
         ]
 
         for result in results:
             program = result["program"]
             lines.append(
-                f"{program_status_icon(program)} {program}"
+                f"🤝 {program_status_icon(program)} {program}"
             )
-
-            for product in result["products"][:5]:
-                lines.append(f"• {product}")
-
-            if len(result["products"]) > 5:
-                lines.append(
-                    f"• … ще {len(result['products']) - 5}"
-                )
-
             lines.append("")
 
-        lines.append(
-            "Оберіть програму, щоб переглянути умови "
-            "або перевірити підключені аптеки."
-        )
+            for item in result["items"]:
+                lines.append(f"• {item['product']}")
+
+                if item["limit"]:
+                    lines.append(
+                        f"  📦 Ліміт: {item['limit']} "
+                        f"{package_word(item['limit'])}"
+                    )
+
+                if item["discount"]:
+                    lines.append(
+                        f"  💸 Знижка: {item['discount']}"
+                    )
+
+                if item["category"]:
+                    lines.append(
+                        f"  🏷 Категорія: {item['category']}"
+                    )
+
+                lines.append("")
 
         await update.message.reply_text(
             "\n".join(lines),
