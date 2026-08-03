@@ -47,6 +47,42 @@ def safe_callback(text):
     h = hashlib.sha1(text.encode('utf-8')).hexdigest()[:20]
     return f"{clean}_{h}"
 
+# -----------------------------------
+# Нормалізація тексту
+# -----------------------------------
+
+def normalize(text):
+
+    if text is None:
+        return ""
+
+    return str(text).strip().lower()
+
+
+# -----------------------------------
+# Отримати значення поля
+# -----------------------------------
+
+def get_value(row, column):
+
+    value = row.get(column, "")
+
+    if value is None:
+        return ""
+
+    return str(value).strip()
+
+
+# -----------------------------------
+# Перевірка порожнього поля
+# -----------------------------------
+
+def has_value(row, column):
+
+    value = get_value(row, column)
+
+    return value != ""
+
 # --- Старт ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -66,110 +102,184 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
     data_cb = query.data
 
-# -------------------------
-# База знань
-# -------------------------
-if data_cb == "knowledge":
+    # -------------------------
+    # Головне меню
+    # -------------------------
 
-    keyboard = [
-        [InlineKeyboardButton(cat, callback_data=safe_callback(cat))]
-        for cat in tree
-    ]
+    if data_cb == "main_menu":
 
-    keyboard.append(
-        [InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]
-    )
+        keyboard = [
+            [InlineKeyboardButton("📚 База знань", callback_data="knowledge")],
+            [InlineKeyboardButton("💊 Доступні ліки", callback_data="drugs")]
+        ]
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "Оберіть розділ:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
-    await query.edit_message_text(
-        "📚 Оберіть категорію:",
-        reply_markup=reply_markup
-    )
-    return
+        return
 
+    # -------------------------
+    # База знань
+    # -------------------------
 
-# -------------------------
-# Доступні ліки
-# -------------------------
-if data_cb == "drugs":
+    if data_cb == "knowledge":
 
-    keyboard = [
+        keyboard = [
+            [InlineKeyboardButton(cat, callback_data=safe_callback(cat))]
+            for cat in tree
+        ]
 
-        [InlineKeyboardButton("🔎 Пошук", callback_data="drug_search")],
+        keyboard.append(
+            [InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]
+        )
 
-        [InlineKeyboardButton("💉 Інсуліни", callback_data="insulin")],
+        await query.edit_message_text(
+            "📚 Оберіть категорію:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
-        [InlineKeyboardButton("🩸 Тест-смужки", callback_data="strips")],
+        return
 
-        [InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]
+    # -------------------------
+    # Доступні ліки
+    # -------------------------
 
-    ]
+    if data_cb == "drugs":
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
+        keyboard = [
 
-    await query.edit_message_text(
-        "Оберіть дію:",
-        reply_markup=reply_markup
-    )
+            [InlineKeyboardButton("🔎 Пошук", callback_data="drug_search")],
 
-    return
+            [InlineKeyboardButton("💉 Інсуліни", callback_data="insulin")],
 
-    # --- Категорія ---
+            [InlineKeyboardButton("🩸 Тест-смужки", callback_data="strips")],
+
+            [InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]
+
+        ]
+
+        await query.edit_message_text(
+
+            "Оберіть дію:",
+
+            reply_markup=InlineKeyboardMarkup(keyboard)
+
+        )
+
+        return
+
+    # -------------------------
+    # Категорія Бази знань
+    # -------------------------
+
     for cat in tree:
         if safe_callback(cat) == data_cb:
-            keyboard = [[InlineKeyboardButton(sub, callback_data=safe_callback(f"{cat}|{sub}"))] for sub in tree[cat]]
-            keyboard.append([InlineKeyboardButton("Головне меню", callback_data="main_menu")])
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(f"Категорія: {cat}\nОберіть підтему:", reply_markup=reply_markup)
+
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        sub,
+                        callback_data=safe_callback(f"{cat}|{sub}")
+                    )
+                ]
+                for sub in tree[cat]
+            ]
+
+            keyboard.append(
+                [InlineKeyboardButton("⬅️ Назад", callback_data="knowledge")]
+            )
+
+            keyboard.append(
+                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")]
+            )
+
+            await query.edit_message_text(
+                f"Категорія: {cat}\nОберіть підтему:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
             return
 
-    # --- Підтема ---
+    # -------------------------
+    # Підтема Бази знань
+    # -------------------------
+
     for cat in tree:
         for sub in tree[cat]:
+
             if safe_callback(f"{cat}|{sub}") == data_cb:
-                keyboard = [[InlineKeyboardButton(q, callback_data=safe_callback(f"{cat}|{sub}|{q}"))] for q in tree[cat][sub]]
-                keyboard.append([InlineKeyboardButton("Назад", callback_data=safe_callback(cat))])
-                keyboard.append([InlineKeyboardButton("Головне меню", callback_data="main_menu")])
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.edit_message_text(f"Підтема: {sub}\nОберіть питання:", reply_markup=reply_markup)
+
+                keyboard = [
+                    [
+                        InlineKeyboardButton(
+                            question,
+                            callback_data=safe_callback(
+                                f"{cat}|{sub}|{question}"
+                            )
+                        )
+                    ]
+                    for question in tree[cat][sub]
+                ]
+
+                keyboard.append(
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ Назад",
+                            callback_data=safe_callback(cat)
+                        )
+                    ]
+                )
+
+                keyboard.append(
+                    [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")]
+                )
+
+                await query.edit_message_text(
+                    f"Підтема: {sub}\nОберіть питання:",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+
                 return
 
-    # --- Питання ---
+    # -------------------------
+    # Відповідь Бази знань
+    # -------------------------
+
     for cat in tree:
         for sub in tree[cat]:
-            for q, ans in tree[cat][sub].items():
-                if safe_callback(f"{cat}|{sub}|{q}") == data_cb:
+            for question, answer in tree[cat][sub].items():
+
+                if safe_callback(f"{cat}|{sub}|{question}") == data_cb:
+
                     keyboard = [
-                        [InlineKeyboardButton("Назад", callback_data=safe_callback(f"{cat}|{sub}"))],
-                        [InlineKeyboardButton("Головне меню", callback_data="main_menu")]
+                        [
+                            InlineKeyboardButton(
+                                "⬅️ Назад",
+                                callback_data=safe_callback(f"{cat}|{sub}")
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                "🏠 Головне меню",
+                                callback_data="main_menu"
+                            )
+                        ]
                     ]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-                    await query.edit_message_text(ans, reply_markup=reply_markup)
+
+                    await query.edit_message_text(
+                        answer or "Відповідь не вказана.",
+                        reply_markup=InlineKeyboardMarkup(keyboard)
+                    )
+
                     return
 
-    # --- Головне меню ---
-if data_cb == "main_menu":
-
-    keyboard = [
-
-        [InlineKeyboardButton("📚 База знань", callback_data="knowledge")],
-
-        [InlineKeyboardButton("💊 Доступні ліки", callback_data="drugs")]
-
-    ]
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await query.edit_message_text(
-        "Оберіть розділ:",
-        reply_markup=reply_markup
-    )
-
 # --- Запуск ---
-if name == 'main':
+if __name__ == "__main__":
     TOKEN = os.getenv('TELEGRAM_TOKEN')
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler('start', start))
