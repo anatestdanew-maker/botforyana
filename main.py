@@ -515,7 +515,7 @@ async def show_search_results(
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.clear()
     await update.message.reply_text(
-        "🚨 TEST VERSION 123 🚨",
+        "Оберіть розділ:",
         reply_markup=main_menu_markup(),
     )
 
