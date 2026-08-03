@@ -49,15 +49,73 @@ def safe_callback(text):
 
 # --- Старт ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton(cat, callback_data=safe_callback(cat))] for cat in tree]
+
+    keyboard = [
+        [InlineKeyboardButton("📚 База знань", callback_data="knowledge")],
+        [InlineKeyboardButton("💊 Доступні ліки", callback_data="drugs")]
+    ]
+
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Привіт! Обери категорію:", reply_markup=reply_markup)
+
+    await update.message.reply_text(
+        "Оберіть розділ:",
+        reply_markup=reply_markup
+    )
 
 # --- Обробка кнопок ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data_cb = query.data
+
+# -------------------------
+# База знань
+# -------------------------
+if data_cb == "knowledge":
+
+    keyboard = [
+        [InlineKeyboardButton(cat, callback_data=safe_callback(cat))]
+        for cat in tree
+    ]
+
+    keyboard.append(
+        [InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]
+    )
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.edit_message_text(
+        "📚 Оберіть категорію:",
+        reply_markup=reply_markup
+    )
+    return
+
+
+# -------------------------
+# Доступні ліки
+# -------------------------
+if data_cb == "drugs":
+
+    keyboard = [
+
+        [InlineKeyboardButton("🔎 Пошук", callback_data="drug_search")],
+
+        [InlineKeyboardButton("💉 Інсуліни", callback_data="insulin")],
+
+        [InlineKeyboardButton("🩸 Тест-смужки", callback_data="strips")],
+
+        [InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]
+
+    ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.edit_message_text(
+        "Оберіть дію:",
+        reply_markup=reply_markup
+    )
+
+    return
 
     # --- Категорія ---
     for cat in tree:
@@ -93,13 +151,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
 
     # --- Головне меню ---
-    if data_cb == "main_menu":
-        keyboard = [[InlineKeyboardButton(cat, callback_data=safe_callback(cat))] for cat in tree]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("Привіт! Обери категорію:", reply_markup=reply_markup)
+if data_cb == "main_menu":
+
+    keyboard = [
+
+        [InlineKeyboardButton("📚 База знань", callback_data="knowledge")],
+
+        [InlineKeyboardButton("💊 Доступні ліки", callback_data="drugs")]
+
+    ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.edit_message_text(
+        "Оберіть розділ:",
+        reply_markup=reply_markup
+    )
 
 # --- Запуск ---
-if __name__ == '__main__':
+if name == 'main':
     TOKEN = os.getenv('TELEGRAM_TOKEN')
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler('start', start))
