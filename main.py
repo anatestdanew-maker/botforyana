@@ -506,20 +506,95 @@ logger.info(
 )
 
 
+def normalize_program_name(value: str) -> str:
+    """
+    Нормалізує назву програми для порівняння:
+    прибирає лапки, розділові знаки, зайві пробіли та регістр.
+    """
+    text = normalize(value)
+    text = re.sub(r"[«»\"'“”„‟()]", " ", text)
+    text = re.sub(r"[^a-zа-яіїєґ0-9]+", " ", text, flags=re.IGNORECASE)
+    return " ".join(text.split())
+
+
+def program_name_tokens(value: str) -> set[str]:
+    ignored = {
+        "україна",
+        "україни",
+        "програма",
+        "нова",
+        "новий",
+        "закрита",
+        "закрито",
+        "діє",
+        "працює",
+        "до",
+        "від",
+        "для",
+        "та",
+        "і",
+        "з",
+        "в",
+        "на",
+    }
+
+    return {
+        token
+        for token in normalize_program_name(value).split()
+        if len(token) >= 4 and token not in ignored
+    }
+
+
 def find_social_program_conditions(program: str) -> dict[str, Any] | None:
-    normalized_program = normalize(program)
+    normalized_program = normalize_program_name(program)
 
-    exact = SOCIAL_PROGRAM_CONDITIONS.get(normalized_program)
-
-    if exact:
-        return exact
-
-    # Запасний варіант для невеликих відмінностей у назвах між вкладками.
+    # 1. Точний збіг після нормалізації.
     for stored_name, data in SOCIAL_PROGRAM_CONDITIONS.items():
-        if stored_name in normalized_program or normalized_program in stored_name:
+        stored_normalized = normalize_program_name(
+            data.get("program", stored_name)
+        )
+
+        if stored_normalized == normalized_program:
             return data
 
-    return None
+    # 2. Одна назва входить до іншої.
+    for stored_name, data in SOCIAL_PROGRAM_CONDITIONS.items():
+        stored_normalized = normalize_program_name(
+            data.get("program", stored_name)
+        )
+
+        if (
+            stored_normalized
+            and normalized_program
+            and (
+                stored_normalized in normalized_program
+                or normalized_program in stored_normalized
+            )
+        ):
+            return data
+
+    # 3. Пошук за характерними словами.
+    # Наприклад:
+    # «БІОКОДЕКС УКРАЇНА Асакард» ↔ «Асакард».
+    query_tokens = program_name_tokens(program)
+    best_match = None
+    best_score = 0
+
+    for stored_name, data in SOCIAL_PROGRAM_CONDITIONS.items():
+        stored_program = data.get("program", stored_name)
+        stored_tokens = program_name_tokens(stored_program)
+        common_tokens = query_tokens & stored_tokens
+
+        if not common_tokens:
+            continue
+
+        score = sum(len(token) for token in common_tokens)
+
+        if score > best_score:
+            best_score = score
+            best_match = data
+
+    return best_match
 
 
 def format_social_program_conditions(program: str) -> str:
