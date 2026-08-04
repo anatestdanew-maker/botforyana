@@ -36,6 +36,7 @@ MEDICAL_DEVICES_SHEET = "РЕЄСТР МЕД ВИРОБИ"
 RESULTS_PER_PAGE = 10
 SOCIAL_RESULTS_PER_PAGE = 10
 SOCIAL_PROGRAMS_PER_PAGE = 10
+KNOWLEDGE_SEARCH_RESULTS_PER_PAGE = 10
 
 SOCIAL_SPREADSHEET_ID = "197_It5B9M2d5pX2m3igzrQGF3snHs9mzOzPuAQ_SUjU"
 
@@ -375,6 +376,151 @@ def find_knowledge_answer(
             return entry["answer"]
 
     return ""
+
+
+def search_knowledge(search_text: str) -> list[dict[str, Any]]:
+    query = normalize(search_text)
+    if not query:
+        return []
+
+    tokens = [token for token in query.split() if len(token) >= 2]
+    results: list[tuple[int, dict[str, Any]]] = []
+
+    for entry in knowledge_entries:
+        path = tuple(
+            value
+            for value in [
+                entry["group"],
+                entry["category"],
+                entry["subcategory"],
+                entry["question"],
+            ]
+            if value
+        )
+        callback = knowledge_path_to_callback.get(path)
+        if not callback:
+            continue
+
+        title_text = normalize(" ".join(path))
+        answer_text = normalize(entry["answer"])
+        full_text = f"{title_text} {answer_text}"
+
+        score = 0
+        if query == normalize(entry["question"]):
+            score += 1000
+        if query in normalize(entry["question"]):
+            score += 500
+        if query in title_text:
+            score += 300
+        if query in answer_text:
+            score += 100
+
+        matched_tokens = sum(1 for token in tokens if token in full_text)
+        if tokens and matched_tokens == len(tokens):
+            score += 200 + matched_tokens * 10
+        elif matched_tokens:
+            score += matched_tokens * 10
+
+        if score:
+            results.append((score, {
+                "path": path,
+                "callback": callback,
+                "question": entry["question"],
+                "category": entry["subcategory"] or entry["category"],
+            }))
+
+    results.sort(
+        key=lambda item: (
+            -item[0],
+            normalize(item[1]["question"]),
+        )
+    )
+
+    unique: list[dict[str, Any]] = []
+    seen_callbacks: set[str] = set()
+    for _, item in results:
+        if item["callback"] in seen_callbacks:
+            continue
+        seen_callbacks.add(item["callback"])
+        unique.append(item)
+
+    return unique
+
+
+def knowledge_search_results_markup(
+    results: list[dict[str, Any]],
+    page: int = 0,
+) -> InlineKeyboardMarkup:
+    total_pages = max(
+        1,
+        (len(results) + KNOWLEDGE_SEARCH_RESULTS_PER_PAGE - 1)
+        // KNOWLEDGE_SEARCH_RESULTS_PER_PAGE,
+    )
+    page = max(0, min(page, total_pages - 1))
+    start = page * KNOWLEDGE_SEARCH_RESULTS_PER_PAGE
+    end = min(start + KNOWLEDGE_SEARCH_RESULTS_PER_PAGE, len(results))
+
+    keyboard: list[list[InlineKeyboardButton]] = []
+    for item in results[start:end]:
+        title = item["question"]
+        category = item["category"]
+        if category:
+            title = f"{title} — {category}"
+        keyboard.append([
+            InlineKeyboardButton(
+                shorten_button(title, max_length=60),
+                callback_data=item["callback"],
+            )
+        ])
+
+    pagination: list[InlineKeyboardButton] = []
+    if page > 0:
+        pagination.append(InlineKeyboardButton(
+            "⬅️", callback_data=f"knowledge_search_page:{page - 1}"
+        ))
+    if end < len(results):
+        pagination.append(InlineKeyboardButton(
+            "➡️", callback_data=f"knowledge_search_page:{page + 1}"
+        ))
+    if pagination:
+        keyboard.append(pagination)
+
+    keyboard.extend([
+        [InlineKeyboardButton("🔍 Новий пошук", callback_data="knowledge_search")],
+        [InlineKeyboardButton("📚 База знань", callback_data="knowledge")],
+        [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+    ])
+    return InlineKeyboardMarkup(keyboard)
+
+
+async def show_knowledge_search_results(
+    message,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    page: int = 0,
+    edit: bool = False,
+) -> None:
+    results = context.user_data.get("knowledge_search_results", [])
+    search_text = context.user_data.get("knowledge_search_text", "")
+    total_pages = max(
+        1,
+        (len(results) + KNOWLEDGE_SEARCH_RESULTS_PER_PAGE - 1)
+        // KNOWLEDGE_SEARCH_RESULTS_PER_PAGE,
+    )
+    page = max(0, min(page, total_pages - 1))
+    context.user_data["knowledge_search_page"] = page
+
+    text = (
+        f"🔍 Запит: {search_text}\n"
+        f"Знайдено: {len(results)}\n"
+        f"Сторінка {page + 1} з {total_pages}"
+    )
+    markup = knowledge_search_results_markup(results, page)
+
+    if edit:
+        await message.edit_message_text(text, reply_markup=markup)
+    else:
+        await message.reply_text(text, reply_markup=markup)
 
 
 drug_book = gc.open(DRUG_SPREADSHEET)
@@ -1152,8 +1298,8 @@ def social_programs_page_data(
     programs: list[str] | None = None,
 ) -> tuple[str, InlineKeyboardMarkup]:
     """
-    Показує лише короткий заголовок і кнопки програм.
-    Текстовий перелік над кнопками не дублюється.
+    Перелік програм показується звичайним текстом зліва без нумерації.
+    Вибір виконується кнопками з назвами програм.
     """
     source_programs = programs if programs is not None else SOCIAL_PROGRAMS
 
@@ -1171,16 +1317,19 @@ def social_programs_page_data(
     )
 
     page_programs = source_programs[start_index:end_index]
+    lines = ["🤝 Оберіть соціальну програму:", ""]
+
     keyboard: list[list[InlineKeyboardButton]] = []
 
     for program in page_programs:
         icon = program_status_icon(program)
+        lines.append(f"{icon} {program}")
 
         program_id = next(
             (
                 identifier
                 for identifier, value in SOCIAL_PROGRAM_BY_ID.items()
-                if value == program
+                if canonical_program_key(value) == canonical_program_key(program)
             ),
             None,
         )
@@ -1188,10 +1337,7 @@ def social_programs_page_data(
         if program_id is not None:
             keyboard.append([
                 InlineKeyboardButton(
-                    shorten_button(
-                        f"{icon} {program}",
-                        max_length=60,
-                    ),
+                    shorten_button(f"{icon} {program}", max_length=60),
                     callback_data=f"social_program:{program_id}",
                 )
             ])
@@ -1240,15 +1386,12 @@ def social_programs_page_data(
     ])
 
     if total_pages > 1:
-        text = (
-            f"🤝 Оберіть соціальну програму "
-            f"({page + 1}/{total_pages})"
-        )
-    else:
-        text = "🤝 Оберіть соціальну програму"
+        lines.extend([
+            "",
+            f"Сторінка {page + 1} з {total_pages}",
+        ])
 
-    return text, InlineKeyboardMarkup(keyboard)
-
+    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
 
 
 def search_social_programs_by_name(search_text: str) -> list[str]:
@@ -1839,6 +1982,7 @@ def format_drug_card(record: dict[str, Any]) -> str:
 
 def main_menu_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔍 Швидкий пошук", callback_data="knowledge_search")],
         [InlineKeyboardButton("📚 База знань", callback_data="knowledge")],
         [InlineKeyboardButton("💊 Доступні ліки", callback_data="drugs")],
         [InlineKeyboardButton("🤝 Соціальні програми", callback_data="social_programs")],
@@ -1985,6 +2129,33 @@ async def button_handler(
         await query.edit_message_text(
             "Оберіть розділ:",
             reply_markup=main_menu_markup(),
+        )
+        return
+
+    if data_cb == "knowledge_search":
+        context.user_data.clear()
+        context.user_data["knowledge_search_mode"] = True
+
+        await query.edit_message_text(
+            "🔍 Введіть ключове слово або фразу для пошуку.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📚 База знань", callback_data="knowledge")],
+                [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+            ]),
+        )
+        return
+
+    if data_cb.startswith("knowledge_search_page:"):
+        try:
+            page = int(data_cb.split(":", 1)[1])
+        except ValueError:
+            return
+
+        await show_knowledge_search_results(
+            query,
+            context,
+            page=page,
+            edit=True,
         )
         return
 
@@ -2227,6 +2398,7 @@ async def button_handler(
 
     if data_cb == "knowledge":
         context.user_data.pop("search_mode", None)
+        context.user_data.pop("knowledge_search_mode", None)
 
         await query.edit_message_text(
             "📚 Оберіть розділ:",
@@ -2236,6 +2408,7 @@ async def button_handler(
 
     if data_cb == "drugs":
         context.user_data.pop("search_mode", None)
+        context.user_data.pop("knowledge_search_mode", None)
         await query.edit_message_text(
             "Оберіть дію:",
             reply_markup=drugs_menu_markup(),
@@ -2608,6 +2781,39 @@ async def text_handler(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     search_text = clean_text(update.message.text)
+
+    if context.user_data.get("knowledge_search_mode"):
+        if not search_text:
+            await update.message.reply_text(
+                "🔍 Введіть ключове слово або фразу для пошуку."
+            )
+            return
+
+        results = search_knowledge(search_text)
+
+        if not results:
+            await update.message.reply_text(
+                "❌ У базі знань нічого не знайдено.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔍 Спробувати ще раз", callback_data="knowledge_search")],
+                    [InlineKeyboardButton("📚 База знань", callback_data="knowledge")],
+                    [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+                ]),
+            )
+            return
+
+        context.user_data.pop("knowledge_search_mode", None)
+        context.user_data["knowledge_search_text"] = search_text
+        context.user_data["knowledge_search_results"] = results
+        context.user_data["knowledge_search_page"] = 0
+
+        await show_knowledge_search_results(
+            update.message,
+            context,
+            page=0,
+            edit=False,
+        )
+        return
 
     if context.user_data.get("social_medicine_search_mode"):
         results = search_programs_by_medicine(search_text)
