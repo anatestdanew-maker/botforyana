@@ -1579,8 +1579,15 @@ def social_results_markup(
         "🔎 Інший пошук",
     )
 
+    if context.user_data.get("social_filter_mode") != "all":
+        keyboard.append([
+            InlineKeyboardButton(
+                repeat_label,
+                callback_data="social_repeat_search",
+            )
+        ])
+
     keyboard.extend([
-        [InlineKeyboardButton(repeat_label, callback_data="social_repeat_search")],
         [InlineKeyboardButton("🔎 Інший спосіб пошуку", callback_data="social_pharmacy_menu")],
         [InlineKeyboardButton("⬅️ До переліку програм", callback_data="social_programs")],
         [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
