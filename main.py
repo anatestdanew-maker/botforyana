@@ -1298,8 +1298,8 @@ def social_programs_page_data(
     programs: list[str] | None = None,
 ) -> tuple[str, InlineKeyboardMarkup]:
     """
-    Перелік програм показується звичайним текстом зліва без нумерації.
-    Вибір виконується кнопками з назвами програм.
+    У тексті залишаємо лише заголовок.
+    Перелік соціальних програм показується тільки кнопками.
     """
     source_programs = programs if programs is not None else SOCIAL_PROGRAMS
 
@@ -1317,13 +1317,12 @@ def social_programs_page_data(
     )
 
     page_programs = source_programs[start_index:end_index]
-    lines = ["🤝 Оберіть соціальну програму:", ""]
+    lines = ["🤝 Оберіть соціальну програму:"]
 
     keyboard: list[list[InlineKeyboardButton]] = []
 
     for program in page_programs:
         icon = program_status_icon(program)
-        lines.append(f"{icon} {program}")
 
         program_id = next(
             (
@@ -1384,12 +1383,6 @@ def social_programs_page_data(
         ],
         [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
     ])
-
-    if total_pages > 1:
-        lines.extend([
-            "",
-            f"Сторінка {page + 1} з {total_pages}",
-        ])
 
     return "\n".join(lines), InlineKeyboardMarkup(keyboard)
 
