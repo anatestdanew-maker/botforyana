@@ -1567,8 +1567,21 @@ def social_results_markup(
     if navigation:
         keyboard.append(navigation)
 
+    repeat_labels = {
+        "city": "🏙 Інше місто",
+        "oblast": "🗺 Інша область",
+        "street": "🛣 Інша вулиця",
+        "number": "🔢 Інший номер аптеки",
+        "all": "🔎 Інший спосіб пошуку",
+    }
+    repeat_label = repeat_labels.get(
+        context.user_data.get("social_filter_mode"),
+        "🔎 Інший пошук",
+    )
+
     keyboard.extend([
-        [InlineKeyboardButton("🔎 Інший пошук", callback_data="social_program_back")],
+        [InlineKeyboardButton(repeat_label, callback_data="social_repeat_search")],
+        [InlineKeyboardButton("🔎 Інший спосіб пошуку", callback_data="social_pharmacy_menu")],
         [InlineKeyboardButton("⬅️ До переліку програм", callback_data="social_programs")],
         [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
     ])
@@ -2302,6 +2315,44 @@ async def button_handler(
         )
         return
 
+    if data_cb == "social_repeat_search":
+        program = selected_social_program(context)
+
+        if not program:
+            return
+
+        filter_mode = context.user_data.get("social_filter_mode")
+
+        prompts = {
+            "city": "🏙 Введіть назву іншого міста:",
+            "oblast": "🗺 Введіть назву іншої області:",
+            "street": "🛣 Введіть назву іншої вулиці:",
+            "number": "🔢 Введіть інший короткий номер аптеки:",
+        }
+
+        prompt = prompts.get(filter_mode)
+
+        context.user_data.pop("social_results", None)
+        context.user_data.pop("social_filter_label", None)
+        context.user_data.pop("social_results_page", None)
+
+        if prompt:
+            await query.edit_message_text(
+                prompt,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Інший спосіб пошуку", callback_data="social_pharmacy_menu")],
+                    [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
+                ]),
+            )
+            return
+
+        await query.edit_message_text(
+            f"{program_status_icon(program)} {program}\n\n"
+            "Оберіть спосіб пошуку аптек:",
+            reply_markup=social_pharmacy_search_markup(),
+        )
+        return
+
     if data_cb == "social_program_back":
         program = selected_social_program(context)
 
@@ -2332,6 +2383,8 @@ async def button_handler(
             return
 
         if filter_mode == "all":
+            context.user_data["social_filter_mode"] = "all"
+
             results = filter_social_pharmacies(
                 program,
                 "all",
