@@ -71,6 +71,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+BOT_VERSION = "24.08.2026-17:55-TEVA-FIX"
+
 
 def prepare_credentials() -> None:
     credentials_b64 = os.getenv("GOOGLE_CREDENTIALS")
@@ -2329,9 +2331,16 @@ async def show_search_results(
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.clear()
     await update.message.reply_text(
-        "Оберіть розділ:",
+        "Оберіть розділ:\n\n🧩 Версія: {BOT_VERSION}",
         reply_markup=main_menu_markup(),
     )
+
+
+async def version_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await update.message.reply_text(f"🧩 Версія бота: {BOT_VERSION}")
 
 
 async def button_handler(
@@ -3331,6 +3340,7 @@ if __name__ == "__main__":
     application = ApplicationBuilder().token(token).build()
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("version", version_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(
         MessageHandler(
@@ -3339,5 +3349,5 @@ if __name__ == "__main__":
         )
     )
 
-    print("Бот запущений...")
+    print(f"Бот запущений. Версія: {BOT_VERSION}")
     application.run_polling()
