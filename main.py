@@ -670,14 +670,96 @@ def canonical_program_key(program_name: str) -> str:
     return replacements.get(text, text)
 
 
+
+# Явна карта відповідностей назв однієї програми між різними вкладками.
+# Це надійніше, ніж fuzzy-пошук за спільними словами.
+PROGRAM_ALIASES = {
+    # AstraZeneca
+    canonical_program_key('АстраЗенека "ТЕРАПІЯ+"'):
+        canonical_program_key('АстраЗенека "ТЕРАПІЯПЛЮС"'),
+
+    # Abbott / Heptral
+    canonical_program_key('Abbott card "РАЗОМ" (Гептрали)'):
+        canonical_program_key('Abbott card "підтримака пацієнтів РАЗОМ"'),
+    canonical_program_key('ЕБОТТ КАРД ГЕПТРАЛ'):
+        canonical_program_key('Abbott card "підтримака пацієнтів РАЗОМ"'),
+
+    # Mobile Medical
+    canonical_program_key('Мобіль Медикал "ЗБЕРЕЖЕМО ЗДОРОВ’Я РАЗОМ"'):
+        canonical_program_key('Мобіль Медикал "ЗБЕРЕЖЕМО ЗДОРОВ’Я РАЗОМ"'),
+
+    # TEVA
+    canonical_program_key('Моменти життя від ТЕВА'):
+        canonical_program_key('ТЕВА "Моменти життя"'),
+    canonical_program_key('Моменти життя від Тева  Аджові'):
+        canonical_program_key('ТЕВА "Моменти життя"'),
+
+    # Darnytsia etc.
+    canonical_program_key('Дарниця "ДОСТУПНИЙ ЗАХИСТ ПЕЧІНКИ І ЖОВЧНОГО МІХУРА"'):
+        canonical_program_key('Дарниця "ДОСТУПНИЙ ЗАХИСТ ПЕЧІНКИ І ЖОВЧНОГО МІХУРА" (Урсохол)'),
+    canonical_program_key('Дарниця "ШЛЯХ ДО ЗДОРОВОГО СЕРЦЯ"'):
+        canonical_program_key('Дарниця "ШЛЯХ ДО ЗДОРОВОГО СЕРЦЯ" (Ефез)'),
+    canonical_program_key('Дарниця "ШЛЯХ ДО ЗДОРОВОГО СЕРЦЯ" (Ефез) закрита програма'):
+        canonical_program_key('Дарниця "ШЛЯХ ДО ЗДОРОВОГО СЕРЦЯ" (Ефез)'),
+    canonical_program_key('Дарниця "ОПАНУЙТЕ СВІЙ ТИСК"'):
+        canonical_program_key('Дарниця "Опануйте свій тиск"'),
+    canonical_program_key('Дарниця "Опануйте свій тиск" закрита програма'):
+        canonical_program_key('Дарниця "Опануйте свій тиск"'),
+    canonical_program_key('Дарниця "МІГРЕНЬ НЕ ВИРОК"'):
+        canonical_program_key('Дарниця "Мігрень не вирок"'),
+    canonical_program_key('Дарниця "Мігрень не вирок" (Ельптан)'):
+        canonical_program_key('Дарниця "Мігрень не вирок"'),
+    canonical_program_key('Дарниця "ВІЛЬНИЙ РУХ БЕЗ БОЛЮ"'):
+        canonical_program_key('Дарниця "Вільний рух без болю"'),
+    canonical_program_key('Дарниця "NEUROCARD" (Альфахолін і цитімакс)'):
+        canonical_program_key('«NEUROCARD» від виробника Дарниця'),
+
+    # Biocodex
+    canonical_program_key('Біокодекс "АСАКАРД"'):
+        canonical_program_key('«Асакард» від виробника ТОВ «БІОКОДЕКС УКРАЇНА»'),
+    canonical_program_key('БІОКОДЕКС УКРАЇНА "Асакард"'):
+        canonical_program_key('«Асакард» від виробника ТОВ «БІОКОДЕКС УКРАЇНА»'),
+
+    # Other names
+    canonical_program_key('Артеріум "КЛЮЧ ДО ЖИТТЯ" діє до 31.07.2026'):
+        canonical_program_key('Артеріум "КЛЮЧ ДО ЖИТТЯ"'),
+    canonical_program_key('Кусум Фарм "MAGIC CARD" НОВИЙ закрита програма'):
+        canonical_program_key('Кусум Фарм "MAGIC CARD"'),
+    canonical_program_key('"Життя без болю при подагрі" (Єврофеб)'):
+        canonical_program_key('Euro Lifecare "Життя без болю при подагрі"'),
+    canonical_program_key('Допомога пацієнту (БХФЗ) діє до 01.07.2026'):
+        canonical_program_key('БХФЗ "Допомога пацієнту"'),
+    canonical_program_key('Допомога пацієнту (БХФЗ) ДІЄ ДО 1.07.2026'):
+        canonical_program_key('БХФЗ "Допомога пацієнту"'),
+    canonical_program_key('Час бачити (ХілоКеа) Медікард'):
+        canonical_program_key('Час бачити'),
+    canonical_program_key('Відновлення якості життя (АльфаНормікс)'):
+        canonical_program_key('Відновлення якості життя'),
+    canonical_program_key('Шлях до відновлення очей (ХілоКеа)'):
+        canonical_program_key('Шлях до відновлення очей'),
+    canonical_program_key('Шлях до відновлення очей (ХілоКеа) ЗАКРИТА'):
+        canonical_program_key('Шлях до відновлення очей'),
+    canonical_program_key('Керуй діабетом з ТОЖЕО СОЛОСТАР'):
+        canonical_program_key('Керуй діабетом з ТОЖЕО, СОЛІКВА'),
+
+    # KRKA closed program: conditions only, no pharmacies.
+    canonical_program_key('КРКА "ЗАХИСТІТЬ СУДИНИ - ЗБЕРЕЖІТЬ СЕРЦЕ" та "ПОКРАЩЕНИЙ КРОВООБІГ ДЛЯ ЗДОРОВ’Я МОЗКУ"'):
+        canonical_program_key('КРКА "ЗАХИСТІТЬ СУДИНИ - ЗБЕРЕЖІТЬ СЕРЦЕ" та "ПОКРАЩЕНИЙ КРОВООБІГ ДЛЯ ЗДОРОВ’Я МОЗКУ"'),
+
+    # NIR: must remain a separate "РАЗОМ" program.
+    canonical_program_key('«РАЗОМ ДО ЗДОРОВОГО МАЙБУТНЬОГО» від виробника НІР'):
+        canonical_program_key('«РАЗОМ ДО ЗДОРОВОГО МАЙБУТНЬОГО» від виробника НІР'),
+}
+
+
+def program_alias_key(value: str) -> str:
+    key = canonical_program_key(value)
+    return PROGRAM_ALIASES.get(key, key)
+
+
 def program_similarity(left: str, right: str) -> float:
-    """
-    Оцінка схожості двох назв.
-    Не об'єднує програми лише через однакового виробника:
-    потрібен збіг характерних слів назви.
-    """
-    left_key = canonical_program_key(left)
-    right_key = canonical_program_key(right)
+    left_key = program_alias_key(left)
+    right_key = program_alias_key(right)
 
     if left_key == right_key:
         return 1.0
@@ -691,23 +773,32 @@ def program_similarity(left: str, right: str) -> float:
     common = left_tokens & right_tokens
     union = left_tokens | right_tokens
 
-    token_score = len(common) / len(union)
+    generic_words = {
+        "разом",
+        "здоровя",
+        "здорового",
+        "пацієнт",
+        "пацієнта",
+        "пацієнтів",
+        "підтримка",
+        "підтримака",
+        "майбутнього",
+    }
 
-    # Довге спільне слово на кшталт "асакард", "neurocard",
-    # "терапія" є сильним сигналом.
-    distinctive = max(
-        (len(token) for token in common),
-        default=0,
-    )
+    distinctive_common = {
+        token for token in common
+        if token not in generic_words
+    }
 
-    if distinctive >= 7:
-        token_score += 0.35
+    if not distinctive_common:
+        return 0.0
 
-    # Якщо одна очищена назва входить в іншу.
-    if left_key in right_key or right_key in left_key:
-        token_score += 0.35
+    score = len(common) / len(union)
 
-    return min(token_score, 1.0)
+    if max((len(token) for token in distinctive_common), default=0) >= 7:
+        score += 0.35
+
+    return min(score, 1.0)
 
 
 def resolve_to_main_program(
@@ -715,16 +806,15 @@ def resolve_to_main_program(
     main_programs: list[str],
 ) -> str | None:
     """
-    Зіставляє назву з вкладки ЗР або умов із основною назвою
-    з вкладки «Аптеки учасники оновлено 15.06».
+    Спочатку використовує явні aliases, потім лише безпечний fuzzy fallback.
     """
     if not program_name:
         return None
 
-    key = canonical_program_key(program_name)
+    key = program_alias_key(program_name)
 
     for main_name in main_programs:
-        if canonical_program_key(main_name) == key:
+        if program_alias_key(main_name) == key:
             return main_name
 
     best_name = None
@@ -737,9 +827,7 @@ def resolve_to_main_program(
             best_score = score
             best_name = main_name
 
-    # Поріг достатньо високий, щоб не зливати різні програми
-    # одного виробника.
-    if best_score >= 0.58:
+    if best_score >= 0.70:
         return best_name
 
     return None
@@ -1199,12 +1287,12 @@ def find_social_program_conditions(program: str) -> dict[str, Any] | None:
     Зіставляє назви однієї програми між різними вкладками.
     """
     selected_main = resolve_to_main_program(program, SOCIAL_PROGRAMS) or program
-    selected_key = canonical_program_key(selected_main)
+    selected_key = program_alias_key(selected_main)
 
     # Спочатку точний canonical match.
     for stored_name, data in SOCIAL_PROGRAM_CONDITIONS.items():
         stored_program = data.get("program", stored_name)
-        if canonical_program_key(stored_program) == selected_key:
+        if program_alias_key(stored_program) == selected_key:
             return data
 
     # Fallback для старих/нестандартних назв.
@@ -1312,6 +1400,30 @@ SOCIAL_PROGRAM_BY_ID: dict[int, str] = {
     for index, program in enumerate(SOCIAL_PROGRAMS, start=1)
 }
 
+
+# Додаємо програми, які є в умовах, але відсутні окремою колонкою в аптеках.
+# Вони залишаються окремими сутностями і не зливаються по слову «РАЗОМ».
+for stored_name, data in SOCIAL_PROGRAM_CONDITIONS.items():
+    condition_program = clean_text(data.get("program", stored_name))
+    if not condition_program:
+        continue
+
+    condition_key = program_alias_key(condition_program)
+
+    if any(
+        program_alias_key(existing) == condition_key
+        for existing in SOCIAL_PROGRAMS
+    ):
+        continue
+
+    SOCIAL_PROGRAMS.append(condition_program)
+
+SOCIAL_PROGRAMS.sort(key=program_sort_key)
+SOCIAL_PROGRAM_BY_ID = {
+    index: program
+    for index, program in enumerate(SOCIAL_PROGRAMS, start=1)
+}
+
 # Назви з вкладки ЗР зіставляємо вручну.
 # Основні назви беремо з основної вкладки, крім спеціальної
 # програми «Пакунок малюка (ЗР)».
@@ -1356,6 +1468,26 @@ logger.info(
 )
 
 
+
+NIR_PROGRAM_KEY = program_alias_key(
+    '«РАЗОМ ДО ЗДОРОВОГО МАЙБУТНЬОГО» від виробника НІР'
+)
+
+NIR_SPECIAL_PHARMACY = {
+    "sheet_name": "SPECIAL",
+    "row_number": 0,
+    "program": '«РАЗОМ ДО ЗДОРОВОГО МАЙБУТНЬОГО» від виробника НІР',
+    "source_program": '«РАЗОМ ДО ЗДОРОВОГО МАЙБУТНЬОГО» від виробника НІР',
+    "participation_value": "НОВА ПРОГРАМА, підключена тільки А134",
+    "short_number": "134",
+    "department": "134 БАМ",
+    "oblast": "Волинська",
+    "city": "Луцьк",
+    "street": "пр. Відродження 26А",
+    "is_zr": True,
+}
+
+
 def social_pharmacies_for_program(program: str) -> list[dict[str, Any]]:
     """Повертає аптеки програми, прибираючи дублікати."""
     selected_main = resolve_to_main_program(
@@ -1363,12 +1495,16 @@ def social_pharmacies_for_program(program: str) -> list[dict[str, Any]]:
         SOCIAL_PROGRAMS,
     ) or program
 
-    selected_key = canonical_program_key(selected_main)
+    selected_key = program_alias_key(selected_main)
+
+    # НІР: спеціально підключена лише аптека А134.
+    if selected_key == NIR_PROGRAM_KEY:
+        return [dict(NIR_SPECIAL_PHARMACY)]
 
     matching = [
         record
         for record in SOCIAL_PHARMACY_RECORDS
-        if canonical_program_key(record["program"]) == selected_key
+        if program_alias_key(record["program"]) == selected_key
     ]
 
     deduplicated: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -1382,7 +1518,6 @@ def social_pharmacies_for_program(program: str) -> list[dict[str, Any]]:
 
         existing = deduplicated.get(key)
 
-        # Якщо та сама аптека є у двох вкладках, зберігаємо позначку ЗР.
         if existing and record["is_zr"]:
             merged = dict(existing)
             merged["is_zr"] = True
@@ -1479,7 +1614,7 @@ def social_programs_page_data(
             (
                 identifier
                 for identifier, value in SOCIAL_PROGRAM_BY_ID.items()
-                if canonical_program_key(value) == canonical_program_key(program)
+                if program_alias_key(value) == program_alias_key(program)
             ),
             None,
         )
@@ -1673,7 +1808,7 @@ def medicine_search_results_markup(
             (
                 identifier
                 for identifier, value in SOCIAL_PROGRAM_BY_ID.items()
-                if canonical_program_key(value) == canonical_program_key(program)
+                if program_alias_key(value) == program_alias_key(program)
             ),
             None,
         )
@@ -1709,13 +1844,38 @@ def selected_social_program(context: ContextTypes.DEFAULT_TYPE) -> str:
     return clean_text(context.user_data.get("social_program", ""))
 
 
-def social_program_actions_markup() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+KRKA_CLOSED_PROGRAM_KEY = program_alias_key('КРКА "ЗАХИСТІТЬ СУДИНИ - ЗБЕРЕЖІТЬ СЕРЦЕ" та "ПОКРАЩЕНИЙ КРОВООБІГ ДЛЯ ЗДОРОВ’Я МОЗКУ"')
+
+
+def is_closed_conditions_only_program(program: str) -> bool:
+    return program_alias_key(program) == KRKA_CLOSED_PROGRAM_KEY
+
+
+def social_program_actions_markup(
+    program: str | None = None,
+) -> InlineKeyboardMarkup:
+    keyboard: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton("📝 Умови програми", callback_data="social_conditions")],
-        [InlineKeyboardButton("🏥 Знайти аптеку", callback_data="social_pharmacy_menu")],
+    ]
+
+    if program and is_closed_conditions_only_program(program):
+        keyboard.append([
+            InlineKeyboardButton(
+                "🔴 Програма закрита",
+                callback_data="social_conditions",
+            )
+        ])
+    else:
+        keyboard.append([
+            InlineKeyboardButton("🏥 Знайти аптеку", callback_data="social_pharmacy_menu")
+        ])
+
+    keyboard.extend([
         [InlineKeyboardButton("⬅️ До переліку програм", callback_data="social_programs")],
         [InlineKeyboardButton("🏠 Головне меню", callback_data="main_menu")],
     ])
+
+    return InlineKeyboardMarkup(keyboard)
 
 
 def social_pharmacy_search_markup() -> InlineKeyboardMarkup:
@@ -1990,7 +2150,7 @@ def cross_social_programs_markup(
             (
                 identifier
                 for identifier, value in SOCIAL_PROGRAM_BY_ID.items()
-                if canonical_program_key(value) == canonical_program_key(program)
+                if program_alias_key(value) == program_alias_key(program)
             ),
             None,
         )
@@ -2480,7 +2640,7 @@ async def button_handler(
         await query.edit_message_text(
             f"{program_status_icon(program)} {program}\n\n"
             "Оберіть дію:",
-            reply_markup=social_program_actions_markup(),
+            reply_markup=social_program_actions_markup(program),
         )
         return
 
@@ -2569,7 +2729,7 @@ async def button_handler(
         await query.edit_message_text(
             f"{program_status_icon(program)} {program}\n\n"
             "Оберіть дію:",
-            reply_markup=social_program_actions_markup(),
+            reply_markup=social_program_actions_markup(program),
         )
         return
 
