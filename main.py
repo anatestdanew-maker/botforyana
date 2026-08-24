@@ -1464,17 +1464,31 @@ def search_social_programs_by_name(search_text: str) -> list[str]:
 
 
 SOCIAL_MEDICINE_PROGRAM_HINTS: dict[str, tuple[str, ...]] = {
-    # Аджові належить до програми «Моменти життя від Тева».
-    "аджові": ("моменти", "життя", "тева"),
+    # Аджові належить до програми «Моменти життя» (ТЕВА).
+    # У різних вкладках назва може бути записана як
+    # «Моменти життя від Тева», «ТЕВА "Моменти життя"» тощо,
+    # тому для зіставлення достатньо двох стабільних слів.
+    "аджові": ("моменти", "життя"),
 }
 
 
 def _find_social_program_by_hint(hint_tokens: tuple[str, ...]) -> str | None:
+    """Знаходить основну назву програми за характерними словами."""
+    candidates: list[tuple[int, str]] = []
+
     for program in SOCIAL_PROGRAMS:
         normalized_program = normalize_program_name(program)
-        if all(token in normalized_program for token in hint_tokens):
-            return program
-    return None
+        matched = sum(1 for token in hint_tokens if token in normalized_program)
+
+        if matched == len(hint_tokens):
+            # Віддаємо перевагу коротшій/чистішій назві при кількох збігах.
+            candidates.append((len(normalized_program), program))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
 
 
 def _medicine_program_override(search_text: str) -> str | None:
@@ -1504,6 +1518,14 @@ def search_programs_by_medicine(
         return []
 
     preferred_program = _medicine_program_override(search_text)
+
+    # Додатковий захист для Аджові: якщо назву програми в основному
+    # переліку трохи перейменували, шукаємо її безпосередньо за словами
+    # «моменти» + «життя». Це не дає показати чужу програму (наприклад,
+    # програму для ТОЖЕО) навіть при некоректному форматуванні вкладки умов.
+    if normalize_medicine_name("аджові") in query and not preferred_program:
+        preferred_program = _find_social_program_by_hint(("моменти", "життя"))
+
     grouped: dict[str, dict[str, Any]] = {}
     all_matching_items: list[dict[str, str]] = []
 
