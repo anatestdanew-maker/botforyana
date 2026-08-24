@@ -1110,28 +1110,29 @@ logger.info(
 
 def find_social_program_conditions(program: str) -> dict[str, Any] | None:
     """
-    Знаходить умови навіть якщо у вкладці умов назва трохи відрізняється.
-    Основною вважається назва з основної вкладки.
+    Знаходить умови однієї й тієї самої програми навіть коли назва
+    відрізняється між вкладками.
+
+    Наприклад:
+    - «Моменти життя від Тева» — вкладка умов;
+    - «Моменти життя від Тева Аджові» — основний перелік аптек;
+    - «Моменти життя від ТЕВА» — вкладка «Аптеки ЗР».
     """
     selected_main = resolve_to_main_program(program, SOCIAL_PROGRAMS) or program
     selected_key = canonical_program_key(selected_main)
 
-    # Спочатку точне зіставлення alias -> canonical.
-    # Це зв'язує:
-    #   Умови: "Моменти життя від Тева"
-    #   Аптеки: "Моменти життя від Тева Аджові"
-    #   Аптеки ЗР: "Моменти життя від ТЕВА"
+    # 1. Точне зіставлення за канонічним ключем.
     for stored_name, data in SOCIAL_PROGRAM_CONDITIONS.items():
         stored_program = data.get("program", stored_name)
         if canonical_program_key(stored_program) == selected_key:
             return data
 
+    # 2. Fallback для інших програм.
     best_match = None
     best_score = 0.0
 
     for stored_name, data in SOCIAL_PROGRAM_CONDITIONS.items():
         stored_program = data.get("program", stored_name)
-
         score = program_similarity(selected_main, stored_program)
 
         if score > best_score:
@@ -1506,11 +1507,10 @@ def search_programs_by_medicine(
     search_text: str,
 ) -> list[dict[str, Any]]:
     """
-    Повертає програми та повні умови знайдених препаратів.
-    Пошук частковий і нечутливий до різниці «і/и».
+    Повертає програми та препарати, що відповідають запиту.
 
-    Для відомих препаратів із однозначною програмою є захист від помилкового
-    зв'язування, якщо структура вкладки «Умови соц.програм» була змінена.
+    Для препаратів з однозначно відомою програмою (зокрема Аджові)
+    пошук препарату виконується тільки в умовах правильної програми.
     """
     query = normalize_medicine_name(search_text)
 
@@ -1518,8 +1518,56 @@ def search_programs_by_medicine(
         return []
 
     preferred_program = _medicine_program_override(search_text)
+
+    # Однозначно відома програма — не збираємо препарати з інших програм.
+    if preferred_program:
+        condition_data = find_social_program_conditions(preferred_program)
+
+        if not condition_data:
+            logger.error(
+                "Не знайдено умови для програми %s",
+                preferred_program,
+            )
+            return []
+
+        matching_items: list[dict[str, str]] = []
+        seen_items: set[tuple[str, str, str]] = set()
+
+        for item in condition_data.get("items", []):
+            product = clean_text(item.get("product", ""))
+
+            if query not in normalize_medicine_name(product):
+                continue
+
+            normalized_item = {
+                "product": product,
+                "limit": clean_text(item.get("limit", "")),
+                "discount": clean_text(item.get("discount", "")),
+                "category": clean_text(item.get("category", "")),
+            }
+
+            item_key = (
+                normalize_medicine_name(normalized_item["product"]),
+                normalize(normalized_item["limit"]),
+                normalize(normalized_item["discount"]),
+            )
+
+            if item_key in seen_items:
+                continue
+
+            seen_items.add(item_key)
+            matching_items.append(normalized_item)
+
+        if not matching_items:
+            return []
+
+        return [{
+            "program": preferred_program,
+            "items": matching_items,
+        }]
+
+    # Звичайний пошук для всіх інших препаратів.
     grouped: dict[str, dict[str, Any]] = {}
-    all_matching_items: list[dict[str, str]] = []
 
     for stored_name, condition_data in SOCIAL_PROGRAM_CONDITIONS.items():
         stored_program = condition_data.get("program", stored_name)
@@ -1528,27 +1576,23 @@ def search_programs_by_medicine(
             SOCIAL_PROGRAMS,
         )
 
+        if not main_program:
+            continue
+
         matching_items: list[dict[str, str]] = []
 
         for item in condition_data.get("items", []):
             product = clean_text(item.get("product", ""))
 
             if query in normalize_medicine_name(product):
-                normalized_item = {
+                matching_items.append({
                     "product": product,
                     "limit": clean_text(item.get("limit", "")),
                     "discount": clean_text(item.get("discount", "")),
                     "category": clean_text(item.get("category", "")),
-                }
-                matching_items.append(normalized_item)
-                all_matching_items.append(normalized_item)
+                })
 
-        if not matching_items or not main_program:
-            continue
-
-        # Якщо для препарату відома однозначна програма, не показуємо
-        # випадкову програму, до якої його міг прив'язати старий формат таблиці.
-        if preferred_program:
+        if not matching_items:
             continue
 
         program_entry = grouped.setdefault(
@@ -1559,39 +1603,25 @@ def search_programs_by_medicine(
             },
         )
 
-        existing_products = {
-            normalize_medicine_name(item["product"])
-            for item in program_entry["items"]
-        }
-
-        for item in matching_items:
-            item_key = normalize_medicine_name(item["product"])
-            if item_key not in existing_products:
-                program_entry["items"].append(item)
-                existing_products.add(item_key)
-
-    if preferred_program and all_matching_items:
-        # Для однозначно відомої програми результат завжди показуємо під
-        # preferred_program. Це не дозволяє старій/зміщеній структурі таблиці
-        # показати "Керуй діабетом з ТОЖЕО" для Аджові.
-        unique_items: list[dict[str, str]] = []
-        seen_items: set[tuple[str, str, str]] = set()
-
-        for item in all_matching_items:
-            key = (
+        existing_items = {
+            (
                 normalize_medicine_name(item["product"]),
                 normalize(item["limit"]),
                 normalize(item["discount"]),
             )
-            if key in seen_items:
-                continue
-            seen_items.add(key)
-            unique_items.append(item)
+            for item in program_entry["items"]
+        }
 
-        return [{
-            "program": preferred_program,
-            "items": unique_items,
-        }]
+        for item in matching_items:
+            item_key = (
+                normalize_medicine_name(item["product"]),
+                normalize(item["limit"]),
+                normalize(item["discount"]),
+            )
+
+            if item_key not in existing_items:
+                program_entry["items"].append(item)
+                existing_items.add(item_key)
 
     return sorted(
         grouped.values(),
@@ -1644,6 +1674,54 @@ def medicine_search_results_markup(
 
 def selected_social_program(context: ContextTypes.DEFAULT_TYPE) -> str:
     return clean_text(context.user_data.get("social_program", ""))
+
+
+def format_social_program_overview(program: str) -> str:
+    """Картка програми: назва + перелік препаратів + меню дій."""
+    lines = [
+        f"{program_status_icon(program)} <b>{html.escape(program)}</b>",
+    ]
+
+    data = find_social_program_conditions(program)
+    items = data.get("items", []) if data else []
+
+    unique_products: list[str] = []
+    seen_products: set[str] = set()
+
+    for item in items:
+        product = clean_text(item.get("product", ""))
+        if not product:
+            continue
+
+        key = normalize_medicine_name(product)
+        if key in seen_products:
+            continue
+
+        seen_products.add(key)
+        unique_products.append(product)
+
+    if unique_products:
+        lines.extend(["", "💊 <b>Препарати програми:</b>"])
+
+        # Захист від надто довгого Telegram-повідомлення.
+        visible_products = unique_products[:25]
+        lines.extend(
+            f"• {html.escape(product)}"
+            for product in visible_products
+        )
+
+        if len(unique_products) > len(visible_products):
+            lines.append(
+                f"• … ще {len(unique_products) - len(visible_products)}"
+            )
+    else:
+        lines.extend([
+            "",
+            "💊 Препарати у вкладці умов не знайдено.",
+        ])
+
+    lines.extend(["", "Оберіть дію:"])
+    return "\n".join(lines)
 
 
 def social_program_actions_markup() -> InlineKeyboardMarkup:
@@ -1927,7 +2005,7 @@ def cross_social_programs_markup(
             (
                 identifier
                 for identifier, value in SOCIAL_PROGRAM_BY_ID.items()
-                if value == program
+                if canonical_program_key(value) == canonical_program_key(program)
             ),
             None,
         )
@@ -2415,8 +2493,8 @@ async def button_handler(
         context.user_data["social_program"] = program
 
         await query.edit_message_text(
-            f"{program_status_icon(program)} {program}\n\n"
-            "Оберіть дію:",
+            format_social_program_overview(program),
+            parse_mode=ParseMode.HTML,
             reply_markup=social_program_actions_markup(),
         )
         return
@@ -2504,8 +2582,8 @@ async def button_handler(
         context.user_data.pop("social_filter_label", None)
 
         await query.edit_message_text(
-            f"{program_status_icon(program)} {program}\n\n"
-            "Оберіть дію:",
+            format_social_program_overview(program),
+            parse_mode=ParseMode.HTML,
             reply_markup=social_program_actions_markup(),
         )
         return
