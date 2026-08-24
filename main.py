@@ -651,10 +651,11 @@ def canonical_program_key(program_name: str) -> str:
     """
     text = normalize_program_name(program_name)
 
-    # Одна й та сама програма в різних таблицях має різні назви:
-    # «Моменти життя від Тева» (умови)
-    # «Моменти життя від Тева Аджові» (перелік аптек).
-    # Для зіставлення це один канонічний ключ.
+    # TEVA: одна програма має різні заголовки у трьох вкладках:
+    # «Моменти життя від Тева» — умови,
+    # «Моменти життя від Тева Аджові» — основні аптеки,
+    # «Моменти життя від ТЕВА» — Аптеки ЗР.
+    # Для логіки бота всі вони є однією програмою.
     if text.startswith("моменти життя від тева"):
         return "моменти життя від тева"
 
@@ -1470,28 +1471,29 @@ def search_social_programs_by_name(search_text: str) -> list[str]:
     )
 
 
-AJOVY_PROGRAM_CANONICAL_KEY = "моменти життя від тева"
+TEVA_MOMENTS_KEY = "моменти життя від тева"
 
 
 def _main_program_by_canonical_key(canonical_key: str) -> str | None:
-    """Повертає фактичну назву програми з переліку аптек."""
-    for program in SOCIAL_PROGRAMS:
-        if canonical_program_key(program) == canonical_key:
+    """Назва програми, яку показуємо користувачу/використовуємо для аптек."""
+    matches = [
+        program for program in SOCIAL_PROGRAMS
+        if canonical_program_key(program) == canonical_key
+    ]
+    if not matches:
+        return None
+
+    # Для основного переліку аптек пріоритет має назва з «Аджові».
+    for program in matches:
+        if "аджові" in normalize_program_name(program):
             return program
-    return None
+    return matches[0]
 
 
 def _medicine_program_override(search_text: str) -> str | None:
-    """
-    Однозначні відповідності препарат → програма.
-    Аджові завжди належить до «Моменти життя від Тева»,
-    навіть якщо у переліку аптек назва має суфікс «Аджові».
-    """
     query = normalize_medicine_name(search_text)
-
     if "аджові" in query:
-        return _main_program_by_canonical_key(AJOVY_PROGRAM_CANONICAL_KEY)
-
+        return _main_program_by_canonical_key(TEVA_MOMENTS_KEY)
     return None
 
 def search_programs_by_medicine(
@@ -1510,17 +1512,6 @@ def search_programs_by_medicine(
         return []
 
     preferred_program = _medicine_program_override(search_text)
-
-    # Якщо це Аджові, але відповідна програма не знайдена в переліку аптек,
-    # не показуємо випадкову/порожню програму.
-    is_ajovy_query = "аджові" in normalize_medicine_name(search_text)
-    if is_ajovy_query and not preferred_program:
-        logger.error(
-            "Не знайдено програму «Моменти життя від Тева» "
-            "у SOCIAL_PROGRAMS для запиту Аджові."
-        )
-        return []
-
     grouped: dict[str, dict[str, Any]] = {}
     all_matching_items: list[dict[str, str]] = []
 
