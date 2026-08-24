@@ -71,8 +71,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-BOT_VERSION = "24.08.2026-17:55-TEVA-FIX"
-
 
 def prepare_credentials() -> None:
     credentials_b64 = os.getenv("GOOGLE_CREDENTIALS")
@@ -990,110 +988,196 @@ def parse_social_program_conditions_rows(
     rows: list[list[str]],
 ) -> dict[str, dict[str, Any]]:
     """
-    Розбирає вкладку «Умови соц.програм».
+    Парсер вкладки «Умови соц.програм».
 
-    Важливо: назва програми може бути як у тому самому рядку, де в A стоїть
-    «Програма», так і в наступному непорожньому рядку. Це потрібно для
-    об'єднаних клітинок у Google Sheets і не дає препаратам випадково
-    потрапляти до попередньої програми.
+    Головне правило структури:
+    НАЗВА ПРОГРАМИ
+    Ліміт уп/картка | Препарат/Дозування | Знижка, %
+    препарати/умови цієї програми...
+
+    Наступний такий самий рядок заголовків = початок наступної програми.
+
+    Абсолютні номери рядків не використовуються, тому вставлення,
+    видалення та порожні рядки не ламають розподіл препаратів.
     """
     conditions: dict[str, dict[str, Any]] = {}
 
-    current_program = ""
-    current_status = ""
-    current_category = ""
-    waiting_for_program_name = False
+    if not rows:
+        return conditions
 
-    def start_program(
-        program_name: str,
-        status: str = "",
-        category: str = "",
-    ) -> None:
-        nonlocal current_program, current_status, current_category
+    SERVICE_LABELS = {
+        "проект",
+        "програма",
+        "умови",
+        "медіакард/програма",
+        "медіакард програма",
+        "медіакард",
+    }
 
-        current_program = clean_text(program_name)
-        current_status = clean_text(status)
-        current_category = clean_text(category)
+    def is_table_header(row: list[str]) -> bool:
+        limit_text = normalize(value_at(row, 2))
+        product_text = normalize(value_at(row, 3))
+        discount_text = normalize(value_at(row, 4))
 
-        conditions.setdefault(
-            normalize(current_program),
-            {
-                "program": current_program,
-                "status": current_status,
-                "categories": [],
-                "items": [],
-            },
+        # Підтримуємо варіанти «Ліміт уп/картка», «Ліміт уп/карта» тощо.
+        has_limit = "ліміт" in limit_text and (
+            "уп" in limit_text or "карт" in limit_text
+        )
+        has_product = (
+            "препарат" in product_text
+            and "дозув" in product_text
+        )
+        has_discount = "зниж" in discount_text
+
+        return has_limit and has_product and has_discount
+
+    def row_values(row: list[str]) -> list[str]:
+        return [clean_text(value) for value in row]
+
+    def is_blank(row: list[str]) -> bool:
+        return not any(row_values(row))
+
+    def find_program_title(header_index: int) -> tuple[str, int | None]:
+        """
+        Назва програми — найближчий змістовний рядок НАД її
+        «Ліміт / Препарат / Знижка» заголовком.
+
+        Порожні рядки та службові «ПРОЕКТ», «Програма» пропускаються.
+        """
+        # Не прив'язуємось до номерів рядків. Шукаємо назад аж до
+        # попереднього table-header або початку файла.
+        idx = header_index - 1
+
+        while idx >= 0:
+            row = rows[idx]
+
+            if is_table_header(row):
+                break
+
+            if is_blank(row):
+                idx -= 1
+                continue
+
+            label_a = normalize(value_at(row, 1))
+
+            # У merged-рядках назва найчастіше лежить у B/C/D.
+            candidate = _program_name_candidate(
+                clean_text(value_at(row, 2)),
+                clean_text(value_at(row, 3)),
+                clean_text(value_at(row, 4)),
+            )
+
+            if candidate:
+                normalized_candidate = normalize(candidate)
+
+                # Не приймаємо службові назви за програму.
+                if normalized_candidate not in SERVICE_LABELS:
+                    return clean_text(candidate), idx
+
+            # Якщо назва раптом лежить в A, але це не службове слово.
+            col_a = clean_text(value_at(row, 1))
+            if col_a and label_a not in SERVICE_LABELS:
+                # Не беремо випадковий рядок препарату як назву.
+                if not clean_text(value_at(row, 3)):
+                    return col_a, idx
+
+            idx -= 1
+
+        return "", None
+
+    # Кожен такий заголовок — жорстка межа окремої програми.
+    headers = [
+        index
+        for index, row in enumerate(rows)
+        if is_table_header(row)
+    ]
+
+    logger.info(
+        "У вкладці умов знайдено %s структурних блоків програм.",
+        len(headers),
+    )
+
+    for block_index, header_index in enumerate(headers):
+        next_header = (
+            headers[block_index + 1]
+            if block_index + 1 < len(headers)
+            else len(rows)
         )
 
-    for row in rows:
-        label = normalize(value_at(row, 1))
-        col_b = clean_text(value_at(row, 2))
-        col_c = clean_text(value_at(row, 3))
-        col_d = clean_text(value_at(row, 4))
-        col_k = clean_text(value_at(row, 11))
-        col_l = clean_text(value_at(row, 12))
+        program_name, title_index = find_program_title(header_index)
 
-        if label == "програма":
-            program_name = _program_name_candidate(col_b, col_c, col_d)
-
-            # Критично: якщо назва не в цьому рядку, не залишаємо попередню
-            # програму активною, інакше наступні препарати прив'яжуться до неї.
-            current_program = ""
-            current_status = ""
-            current_category = ""
-
-            if program_name:
-                start_program(program_name, col_k, col_l)
-                waiting_for_program_name = False
-            else:
-                waiting_for_program_name = True
+        if not program_name:
+            logger.warning(
+                "Пропущено блок біля рядка %s: не знайдено назву програми.",
+                header_index + 1,
+            )
             continue
 
-        if waiting_for_program_name:
-            program_name = _program_name_candidate(col_b, col_c, col_d)
-
-            if program_name:
-                start_program(program_name, col_k, col_l)
-                waiting_for_program_name = False
-
-            # Рядок, з якого взяли назву, не трактуємо як препарат.
-            continue
-
-        # Службовий рядок «Умови» не є препаратом.
-        if label == "умови":
-            continue
-
-        if not current_program:
-            continue
+        title_row = rows[title_index] if title_index is not None else []
+        program_key = normalize(program_name)
 
         program_data = conditions.setdefault(
-            normalize(current_program),
+            program_key,
             {
-                "program": current_program,
-                "status": current_status,
+                "program": program_name,
+                "status": clean_text(value_at(title_row, 11)),
                 "categories": [],
                 "items": [],
             },
         )
 
-        if col_k and not program_data.get("status"):
-            program_data["status"] = col_k
+        # КРИТИЧНО: читаємо тільки від header+1 до наступного header.
+        # Отже Аджові фізично не може потрапити в ТОЖЕО, а Гептрал —
+        # у TEVA/ТОЖЕО, якщо кожен блок має свій B/C/D заголовок.
+        for row_index in range(header_index + 1, next_header):
+            row = rows[row_index]
 
-        category = col_l or current_category
+            if is_blank(row):
+                continue
 
-        if category and category not in program_data["categories"]:
-            program_data["categories"].append(category)
+            # Службові/нові назви між блоками не є препаратами.
+            label_a = normalize(value_at(row, 1))
+            if label_a in SERVICE_LABELS:
+                continue
 
-        if _conditions_row_is_header(col_b, col_c, col_d):
-            continue
+            limit_value = clean_text(value_at(row, 2))
+            product = clean_text(value_at(row, 3))
+            discount = clean_text(value_at(row, 4))
+            status = clean_text(value_at(row, 11))
+            category = clean_text(value_at(row, 12))
 
-        if col_c:
+            if not product:
+                continue
+
+            # Захист від будь-яких повторних заголовків.
+            if is_table_header(row):
+                continue
+
+            normalized_product = normalize(product)
+            if (
+                "препарат" in normalized_product
+                and "дозув" in normalized_product
+            ):
+                continue
+
+            if category and category not in program_data["categories"]:
+                program_data["categories"].append(category)
+
+            if status and not program_data.get("status"):
+                program_data["status"] = status
+
             program_data["items"].append({
-                "limit": col_b,
-                "product": col_c,
-                "discount": col_d,
+                "limit": limit_value,
+                "product": product,
+                "discount": discount,
                 "category": category,
             })
+
+        logger.info(
+            "Програма %r: завантажено %s препаратів.",
+            program_name,
+            len(program_data["items"]),
+        )
 
     return conditions
 
@@ -1112,24 +1196,18 @@ logger.info(
 
 def find_social_program_conditions(program: str) -> dict[str, Any] | None:
     """
-    Знаходить умови однієї й тієї самої програми навіть коли назва
-    відрізняється між вкладками.
-
-    Наприклад:
-    - «Моменти життя від Тева» — вкладка умов;
-    - «Моменти життя від Тева Аджові» — основний перелік аптек;
-    - «Моменти життя від ТЕВА» — вкладка «Аптеки ЗР».
+    Зіставляє назви однієї програми між різними вкладками.
     """
     selected_main = resolve_to_main_program(program, SOCIAL_PROGRAMS) or program
     selected_key = canonical_program_key(selected_main)
 
-    # 1. Точне зіставлення за канонічним ключем.
+    # Спочатку точний canonical match.
     for stored_name, data in SOCIAL_PROGRAM_CONDITIONS.items():
         stored_program = data.get("program", stored_name)
         if canonical_program_key(stored_program) == selected_key:
             return data
 
-    # 2. Fallback для інших програм.
+    # Fallback для старих/нестандартних назв.
     best_match = None
     best_score = 0.0
 
@@ -1509,66 +1587,17 @@ def search_programs_by_medicine(
     search_text: str,
 ) -> list[dict[str, Any]]:
     """
-    Повертає програми та препарати, що відповідають запиту.
+    Повертає програми та препарати за назвою препарату.
 
-    Для препаратів з однозначно відомою програмою (зокрема Аджові)
-    пошук препарату виконується тільки в умовах правильної програми.
+    Препарат береться тільки з того блоку умов, у якому він реально
+    знаходиться. Назва програми зіставляється з основним переліком аптек
+    через canonical_program_key / resolve_to_main_program.
     """
     query = normalize_medicine_name(search_text)
 
     if not query:
         return []
 
-    preferred_program = _medicine_program_override(search_text)
-
-    # Однозначно відома програма — не збираємо препарати з інших програм.
-    if preferred_program:
-        condition_data = find_social_program_conditions(preferred_program)
-
-        if not condition_data:
-            logger.error(
-                "Не знайдено умови для програми %s",
-                preferred_program,
-            )
-            return []
-
-        matching_items: list[dict[str, str]] = []
-        seen_items: set[tuple[str, str, str]] = set()
-
-        for item in condition_data.get("items", []):
-            product = clean_text(item.get("product", ""))
-
-            if query not in normalize_medicine_name(product):
-                continue
-
-            normalized_item = {
-                "product": product,
-                "limit": clean_text(item.get("limit", "")),
-                "discount": clean_text(item.get("discount", "")),
-                "category": clean_text(item.get("category", "")),
-            }
-
-            item_key = (
-                normalize_medicine_name(normalized_item["product"]),
-                normalize(normalized_item["limit"]),
-                normalize(normalized_item["discount"]),
-            )
-
-            if item_key in seen_items:
-                continue
-
-            seen_items.add(item_key)
-            matching_items.append(normalized_item)
-
-        if not matching_items:
-            return []
-
-        return [{
-            "program": preferred_program,
-            "items": matching_items,
-        }]
-
-    # Звичайний пошук для всіх інших препаратів.
     grouped: dict[str, dict[str, Any]] = {}
 
     for stored_name, condition_data in SOCIAL_PROGRAM_CONDITIONS.items():
@@ -1586,13 +1615,15 @@ def search_programs_by_medicine(
         for item in condition_data.get("items", []):
             product = clean_text(item.get("product", ""))
 
-            if query in normalize_medicine_name(product):
-                matching_items.append({
-                    "product": product,
-                    "limit": clean_text(item.get("limit", "")),
-                    "discount": clean_text(item.get("discount", "")),
-                    "category": clean_text(item.get("category", "")),
-                })
+            if query not in normalize_medicine_name(product):
+                continue
+
+            matching_items.append({
+                "product": product,
+                "limit": clean_text(item.get("limit", "")),
+                "discount": clean_text(item.get("discount", "")),
+                "category": clean_text(item.get("category", "")),
+            })
 
         if not matching_items:
             continue
@@ -1676,54 +1707,6 @@ def medicine_search_results_markup(
 
 def selected_social_program(context: ContextTypes.DEFAULT_TYPE) -> str:
     return clean_text(context.user_data.get("social_program", ""))
-
-
-def format_social_program_overview(program: str) -> str:
-    """Картка програми: назва + перелік препаратів + меню дій."""
-    lines = [
-        f"{program_status_icon(program)} <b>{html.escape(program)}</b>",
-    ]
-
-    data = find_social_program_conditions(program)
-    items = data.get("items", []) if data else []
-
-    unique_products: list[str] = []
-    seen_products: set[str] = set()
-
-    for item in items:
-        product = clean_text(item.get("product", ""))
-        if not product:
-            continue
-
-        key = normalize_medicine_name(product)
-        if key in seen_products:
-            continue
-
-        seen_products.add(key)
-        unique_products.append(product)
-
-    if unique_products:
-        lines.extend(["", "💊 <b>Препарати програми:</b>"])
-
-        # Захист від надто довгого Telegram-повідомлення.
-        visible_products = unique_products[:25]
-        lines.extend(
-            f"• {html.escape(product)}"
-            for product in visible_products
-        )
-
-        if len(unique_products) > len(visible_products):
-            lines.append(
-                f"• … ще {len(unique_products) - len(visible_products)}"
-            )
-    else:
-        lines.extend([
-            "",
-            "💊 Препарати у вкладці умов не знайдено.",
-        ])
-
-    lines.extend(["", "Оберіть дію:"])
-    return "\n".join(lines)
 
 
 def social_program_actions_markup() -> InlineKeyboardMarkup:
@@ -2331,16 +2314,9 @@ async def show_search_results(
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.clear()
     await update.message.reply_text(
-        "Оберіть розділ:\n\n🧩 Версія: {BOT_VERSION}",
+        "Оберіть розділ:",
         reply_markup=main_menu_markup(),
     )
-
-
-async def version_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    await update.message.reply_text(f"🧩 Версія бота: {BOT_VERSION}")
 
 
 async def button_handler(
@@ -2502,8 +2478,8 @@ async def button_handler(
         context.user_data["social_program"] = program
 
         await query.edit_message_text(
-            format_social_program_overview(program),
-            parse_mode=ParseMode.HTML,
+            f"{program_status_icon(program)} {program}\n\n"
+            "Оберіть дію:",
             reply_markup=social_program_actions_markup(),
         )
         return
@@ -2591,8 +2567,8 @@ async def button_handler(
         context.user_data.pop("social_filter_label", None)
 
         await query.edit_message_text(
-            format_social_program_overview(program),
-            parse_mode=ParseMode.HTML,
+            f"{program_status_icon(program)} {program}\n\n"
+            "Оберіть дію:",
             reply_markup=social_program_actions_markup(),
         )
         return
@@ -3340,7 +3316,6 @@ if __name__ == "__main__":
     application = ApplicationBuilder().token(token).build()
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("version", version_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(
         MessageHandler(
@@ -3349,5 +3324,5 @@ if __name__ == "__main__":
         )
     )
 
-    print(f"Бот запущений. Версія: {BOT_VERSION}")
+    print("Бот запущений...")
     application.run_polling()
