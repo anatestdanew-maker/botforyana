@@ -941,28 +941,79 @@ social_zr_records, social_zr_programs = load_social_sheet_records(
 )
 
 
-def load_social_program_conditions() -> dict[str, dict[str, Any]]:
-    """
-    Читає вкладку «Умови соц.програм».
+def _conditions_row_is_header(col_b: str, col_c: str, col_d: str) -> bool:
+    normalized_product = normalize(col_c)
+    normalized_limit = normalize(col_b)
+    normalized_discount = normalize(col_d)
 
-    Структура за поточним файлом:
-    A — службові позначки «Програма» / «Умови»;
-    B — ліміт упаковок/карток;
-    C — препарат або дозування;
-    D — знижка;
-    K — статус або примітка;
-    L — категорія товарів.
+    return (
+        ("препарат" in normalized_product and "дозування" in normalized_product)
+        or ("ліміт" in normalized_limit and "знижка" in normalized_discount)
+    )
 
-    Об'єднані клітинки не заважають: значення програми береться з першого
-    непорожнього рядка після позначки «Програма», а далі зберігається до
-    наступної програми.
+
+def _program_name_candidate(col_b: str, col_c: str, col_d: str) -> str:
+    """Повертає назву програми, але не службові заголовки таблиці."""
+    if _conditions_row_is_header(col_b, col_c, col_d):
+        return ""
+
+    blocked = {
+        "програма",
+        "умови",
+        "ліміт",
+        "ліміт упаковок",
+        "препарат",
+        "препарат та дозування",
+        "препарат або дозування",
+        "знижка",
+    }
+
+    for value in (col_b, col_c, col_d):
+        cleaned = clean_text(value)
+        if cleaned and normalize(cleaned) not in blocked:
+            return cleaned
+
+    return ""
+
+
+def parse_social_program_conditions_rows(
+    rows: list[list[str]],
+) -> dict[str, dict[str, Any]]:
     """
-    rows = social_conditions_sheet.get_all_values()
+    Розбирає вкладку «Умови соц.програм».
+
+    Важливо: назва програми може бути як у тому самому рядку, де в A стоїть
+    «Програма», так і в наступному непорожньому рядку. Це потрібно для
+    об'єднаних клітинок у Google Sheets і не дає препаратам випадково
+    потрапляти до попередньої програми.
+    """
     conditions: dict[str, dict[str, Any]] = {}
 
     current_program = ""
     current_status = ""
     current_category = ""
+    waiting_for_program_name = False
+
+    def start_program(
+        program_name: str,
+        status: str = "",
+        category: str = "",
+    ) -> None:
+        nonlocal current_program, current_status, current_category
+
+        current_program = clean_text(program_name)
+        current_status = clean_text(status)
+        current_category = clean_text(category)
+
+        conditions.setdefault(
+            normalize(current_program),
+            {
+                "program": current_program,
+                "status": current_status,
+                "categories": [],
+                "items": [],
+            },
+        )
 
     for row in rows:
         label = normalize(value_at(row, 1))
@@ -973,22 +1024,33 @@ def load_social_program_conditions() -> dict[str, dict[str, Any]]:
         col_l = clean_text(value_at(row, 12))
 
         if label == "програма":
-            program_name = col_b or col_c or col_d
+            program_name = _program_name_candidate(col_b, col_c, col_d)
+
+            # Критично: якщо назва не в цьому рядку, не залишаємо попередню
+            # програму активною, інакше наступні препарати прив'яжуться до неї.
+            current_program = ""
+            current_status = ""
+            current_category = ""
 
             if program_name:
-                current_program = clean_text(program_name)
-                current_status = col_k
-                current_category = col_l
+                start_program(program_name, col_k, col_l)
+                waiting_for_program_name = False
+            else:
+                waiting_for_program_name = True
+            continue
 
-                conditions.setdefault(
-                    normalize(current_program),
-                    {
-                        "program": current_program,
-                        "status": current_status,
-                        "categories": [],
-                        "items": [],
-                    },
-                )
+        if waiting_for_program_name:
+            program_name = _program_name_candidate(col_b, col_c, col_d)
+
+            if program_name:
+                start_program(program_name, col_k, col_l)
+                waiting_for_program_name = False
+
+            # Рядок, з якого взяли назву, не трактуємо як препарат.
+            continue
+
+        # Службовий рядок «Умови» не є препаратом.
+        if label == "умови":
             continue
 
         if not current_program:
@@ -1012,21 +1074,10 @@ def load_social_program_conditions() -> dict[str, dict[str, Any]]:
         if category and category not in program_data["categories"]:
             program_data["categories"].append(category)
 
-        # Пропускаємо службовий рядок заголовків таблиці.
-        normalized_product = normalize(col_c)
-        normalized_limit = normalize(col_b)
-        normalized_discount = normalize(col_d)
+        if _conditions_row_is_header(col_b, col_c, col_d):
+            continue
 
-        is_header_row = (
-            "препарат" in normalized_product
-            and "дозування" in normalized_product
-        ) or (
-            "ліміт" in normalized_limit
-            and "знижка" in normalized_discount
-        )
-
-        # Рядок препарату: є реальна назва/дозування у C.
-        if col_c and not is_header_row:
+        if col_c:
             program_data["items"].append({
                 "limit": col_b,
                 "product": col_c,
@@ -1035,6 +1086,11 @@ def load_social_program_conditions() -> dict[str, dict[str, Any]]:
             })
 
     return conditions
+
+
+def load_social_program_conditions() -> dict[str, dict[str, Any]]:
+    rows = social_conditions_sheet.get_all_values()
+    return parse_social_program_conditions_rows(rows)
 
 
 SOCIAL_PROGRAM_CONDITIONS = load_social_program_conditions()
@@ -1407,19 +1463,49 @@ def search_social_programs_by_name(search_text: str) -> list[str]:
     )
 
 
+SOCIAL_MEDICINE_PROGRAM_HINTS: dict[str, tuple[str, ...]] = {
+    # Аджові належить до програми «Моменти життя від Тева».
+    "аджові": ("моменти", "життя", "тева"),
+}
+
+
+def _find_social_program_by_hint(hint_tokens: tuple[str, ...]) -> str | None:
+    for program in SOCIAL_PROGRAMS:
+        normalized_program = normalize_program_name(program)
+        if all(token in normalized_program for token in hint_tokens):
+            return program
+    return None
+
+
+def _medicine_program_override(search_text: str) -> str | None:
+    query = normalize_medicine_name(search_text)
+
+    for medicine_name, hint_tokens in SOCIAL_MEDICINE_PROGRAM_HINTS.items():
+        normalized_name = normalize_medicine_name(medicine_name)
+        if normalized_name in query or query in normalized_name:
+            return _find_social_program_by_hint(hint_tokens)
+
+    return None
+
+
 def search_programs_by_medicine(
     search_text: str,
 ) -> list[dict[str, Any]]:
     """
     Повертає програми та повні умови знайдених препаратів.
     Пошук частковий і нечутливий до різниці «і/и».
+
+    Для відомих препаратів із однозначною програмою є захист від помилкового
+    зв'язування, якщо структура вкладки «Умови соц.програм» була змінена.
     """
     query = normalize_medicine_name(search_text)
 
     if not query:
         return []
 
+    preferred_program = _medicine_program_override(search_text)
     grouped: dict[str, dict[str, Any]] = {}
+    all_matching_items: list[dict[str, str]] = []
 
     for stored_name, condition_data in SOCIAL_PROGRAM_CONDITIONS.items():
         stored_program = condition_data.get("program", stored_name)
@@ -1428,23 +1514,27 @@ def search_programs_by_medicine(
             SOCIAL_PROGRAMS,
         )
 
-        if not main_program:
-            continue
-
         matching_items: list[dict[str, str]] = []
 
         for item in condition_data.get("items", []):
             product = clean_text(item.get("product", ""))
 
             if query in normalize_medicine_name(product):
-                matching_items.append({
+                normalized_item = {
                     "product": product,
                     "limit": clean_text(item.get("limit", "")),
                     "discount": clean_text(item.get("discount", "")),
                     "category": clean_text(item.get("category", "")),
-                })
+                }
+                matching_items.append(normalized_item)
+                all_matching_items.append(normalized_item)
 
-        if not matching_items:
+        if not matching_items or not main_program:
+            continue
+
+        # Якщо для препарату відома однозначна програма, не показуємо
+        # випадкову програму, до якої його міг прив'язати старий формат таблиці.
+        if preferred_program:
             continue
 
         program_entry = grouped.setdefault(
@@ -1465,6 +1555,26 @@ def search_programs_by_medicine(
             if item_key not in existing_products:
                 program_entry["items"].append(item)
                 existing_products.add(item_key)
+
+    if preferred_program and all_matching_items:
+        unique_items: list[dict[str, str]] = []
+        seen_items: set[tuple[str, str, str]] = set()
+
+        for item in all_matching_items:
+            key = (
+                normalize_medicine_name(item["product"]),
+                normalize(item["limit"]),
+                normalize(item["discount"]),
+            )
+            if key in seen_items:
+                continue
+            seen_items.add(key)
+            unique_items.append(item)
+
+        return [{
+            "program": preferred_program,
+            "items": unique_items,
+        }]
 
     return sorted(
         grouped.values(),
@@ -2250,6 +2360,7 @@ async def button_handler(
             return
 
         context.user_data["social_program"] = program
+        context.user_data.pop("social_medicine_search_mode", None)
         context.user_data.pop("social_filter_mode", None)
 
         await query.edit_message_text(
@@ -2945,7 +3056,7 @@ async def text_handler(
             )
             return
 
-        context.user_data.pop("social_medicine_search_mode", None)
+        context.user_data["social_medicine_search_mode"] = True
         context.user_data["social_medicine_results"] = results
 
         lines = [
