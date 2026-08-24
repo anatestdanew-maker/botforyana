@@ -1114,19 +1114,23 @@ def find_social_program_conditions(program: str) -> dict[str, Any] | None:
     Основною вважається назва з основної вкладки.
     """
     selected_main = resolve_to_main_program(program, SOCIAL_PROGRAMS) or program
+    selected_key = canonical_program_key(selected_main)
+
+    # Спочатку точне зіставлення alias -> canonical.
+    # Це зв'язує:
+    #   Умови: "Моменти життя від Тева"
+    #   Аптеки: "Моменти життя від Тева Аджові"
+    #   Аптеки ЗР: "Моменти життя від ТЕВА"
+    for stored_name, data in SOCIAL_PROGRAM_CONDITIONS.items():
+        stored_program = data.get("program", stored_name)
+        if canonical_program_key(stored_program) == selected_key:
+            return data
 
     best_match = None
     best_score = 0.0
 
     for stored_name, data in SOCIAL_PROGRAM_CONDITIONS.items():
         stored_program = data.get("program", stored_name)
-        resolved_stored = resolve_to_main_program(
-            stored_program,
-            SOCIAL_PROGRAMS,
-        )
-
-        if resolved_stored == selected_main:
-            return data
 
         score = program_similarity(selected_main, stored_program)
 
@@ -1278,10 +1282,12 @@ def social_pharmacies_for_program(program: str) -> list[dict[str, Any]]:
         SOCIAL_PROGRAMS,
     ) or program
 
+    selected_key = canonical_program_key(selected_main)
+
     matching = [
         record
         for record in SOCIAL_PHARMACY_RECORDS
-        if record["program"] == selected_main
+        if canonical_program_key(record["program"]) == selected_key
     ]
 
     deduplicated: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -1565,6 +1571,9 @@ def search_programs_by_medicine(
                 existing_products.add(item_key)
 
     if preferred_program and all_matching_items:
+        # Для однозначно відомої програми результат завжди показуємо під
+        # preferred_program. Це не дозволяє старій/зміщеній структурі таблиці
+        # показати "Керуй діабетом з ТОЖЕО" для Аджові.
         unique_items: list[dict[str, str]] = []
         seen_items: set[tuple[str, str, str]] = set()
 
@@ -1601,7 +1610,7 @@ def medicine_search_results_markup(
             (
                 identifier
                 for identifier, value in SOCIAL_PROGRAM_BY_ID.items()
-                if value == program
+                if canonical_program_key(value) == canonical_program_key(program)
             ),
             None,
         )
