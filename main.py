@@ -1389,9 +1389,14 @@ def format_social_program_conditions(program: str) -> str:
     return "\n".join(lines)
 
 
-# Основний перелік і назви програм беремо ТІЛЬКИ з основної вкладки.
+# ВІДОБРАЖУВАНІ назви програм беремо ТІЛЬКИ з вкладки «Умови соц.програм».
+# Назви з аптечних вкладок використовуються лише для технічного зіставлення.
 SOCIAL_PROGRAMS = sorted(
-    set(social_main_programs),
+    {
+        clean_text(data.get("program", stored_name))
+        for stored_name, data in SOCIAL_PROGRAM_CONDITIONS.items()
+        if clean_text(data.get("program", stored_name))
+    },
     key=program_sort_key,
 )
 
@@ -1401,36 +1406,9 @@ SOCIAL_PROGRAM_BY_ID: dict[int, str] = {
 }
 
 
-# Додаємо програми, які є в умовах, але відсутні окремою колонкою в аптеках.
-# Вони залишаються окремими сутностями і не зливаються по слову «РАЗОМ».
-for stored_name, data in SOCIAL_PROGRAM_CONDITIONS.items():
-    condition_program = clean_text(data.get("program", stored_name))
-    if not condition_program:
-        continue
-
-    condition_key = program_alias_key(condition_program)
-
-    if any(
-        program_alias_key(existing) == condition_key
-        for existing in SOCIAL_PROGRAMS
-    ):
-        continue
-
-    SOCIAL_PROGRAMS.append(condition_program)
-
-SOCIAL_PROGRAMS.sort(key=program_sort_key)
-SOCIAL_PROGRAM_BY_ID = {
-    index: program
-    for index, program in enumerate(SOCIAL_PROGRAMS, start=1)
-}
-
 # Назви з вкладки ЗР зіставляємо вручну.
-# Основні назви беремо з основної вкладки, крім спеціальної
-# програми «Пакунок малюка (ЗР)».
-if "Пакунок малюка (ЗР)" not in SOCIAL_PROGRAMS:
-    SOCIAL_PROGRAMS.append("Пакунок малюка (ЗР)")
-    SOCIAL_PROGRAMS.sort(key=program_sort_key)
-
+# Відображувані назви не змінюємо: вони залишаються саме такими,
+# як у вкладці «Умови соц.програм».
 SOCIAL_PROGRAM_BY_ID = {
     index: program
     for index, program in enumerate(SOCIAL_PROGRAMS, start=1)
@@ -1439,24 +1417,64 @@ SOCIAL_PROGRAM_BY_ID = {
 mapped_zr_records: list[dict[str, Any]] = []
 
 for record in social_zr_records:
-    alias_key = zr_alias_key(record["program"])
-    main_program = ZR_PROGRAM_ALIASES.get(alias_key)
+    source_program = record["program"]
+    target_key = program_alias_key(source_program)
 
-    if not main_program:
+    display_program = next(
+        (
+            program
+            for program in SOCIAL_PROGRAMS
+            if program_alias_key(program) == target_key
+        ),
+        None,
+    )
+
+    # Fallback на стару ручну карту, але відображувану назву все одно
+    # намагаємося взяти з вкладки умов.
+    if not display_program:
+        alias_key = zr_alias_key(source_program)
+        mapped_name = ZR_PROGRAM_ALIASES.get(alias_key)
+
+        if mapped_name:
+            mapped_key = program_alias_key(mapped_name)
+            display_program = next(
+                (
+                    program
+                    for program in SOCIAL_PROGRAMS
+                    if program_alias_key(program) == mapped_key
+                ),
+                None,
+            )
+
+    if not display_program:
         logger.warning(
-            "Немає ручного відповідника для програми ЗР: %s",
-            record["program"],
+            "Немає відповідника у вкладці умов для програми ЗР: %s",
+            source_program,
         )
         continue
 
     mapped_record = dict(record)
-    mapped_record["source_program"] = record["program"]
-    mapped_record["program"] = main_program
+    mapped_record["source_program"] = source_program
+    mapped_record["program"] = display_program
     mapped_record["is_zr"] = True
     mapped_zr_records.append(mapped_record)
 
 for record in social_main_records:
-    record["source_program"] = record["program"]
+    source_program = record["program"]
+    source_key = program_alias_key(source_program)
+
+    display_program = next(
+        (
+            program
+            for program in SOCIAL_PROGRAMS
+            if program_alias_key(program) == source_key
+        ),
+        None,
+    )
+
+    record["source_program"] = source_program
+    if display_program:
+        record["program"] = display_program
     record["is_zr"] = False
 
 SOCIAL_PHARMACY_RECORDS = social_main_records + mapped_zr_records
