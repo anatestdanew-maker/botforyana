@@ -803,6 +803,12 @@ ZR_PROGRAM_ALIASES = {
 }
 
 
+# Канонічна назва програми для Аджові.
+# Вона не визначається через fuzzy matching, щоб препарат ніколи
+# не потрапляв до іншої соціальної програми через структуру таблиці.
+AJOVY_PROGRAM = 'Моменти життя від Тева  Аджові'
+
+
 def zr_alias_key(value: str) -> str:
     return normalize_program_name(value)
 
@@ -1224,7 +1230,13 @@ SOCIAL_PROGRAM_BY_ID: dict[int, str] = {
 # програми «Пакунок малюка (ЗР)».
 if "Пакунок малюка (ЗР)" not in SOCIAL_PROGRAMS:
     SOCIAL_PROGRAMS.append("Пакунок малюка (ЗР)")
-    SOCIAL_PROGRAMS.sort(key=program_sort_key)
+
+# «Моменти життя від Тева / Аджові» може бути присутня лише у вкладці ЗР,
+# тому додаємо її до єдиного переліку програм явно.
+if AJOVY_PROGRAM not in SOCIAL_PROGRAMS:
+    SOCIAL_PROGRAMS.append(AJOVY_PROGRAM)
+
+SOCIAL_PROGRAMS.sort(key=program_sort_key)
 
 SOCIAL_PROGRAM_BY_ID = {
     index: program
@@ -1509,25 +1521,61 @@ def search_programs_by_medicine(
     Повертає програми та повні умови знайдених препаратів.
     Пошук частковий і нечутливий до різниці «і/и».
 
-    Для відомих препаратів із однозначною програмою є захист від помилкового
-    зв'язування, якщо структура вкладки «Умови соц.програм» була змінена.
+    Для Аджові відповідність задається явно: «Моменти життя від Тева».
+    Це навмисно обходить resolve_to_main_program(), тому що fuzzy-зіставлення
+    назв програм може помилково прив'язати рядок препарату до іншої програми.
     """
     query = normalize_medicine_name(search_text)
 
     if not query:
         return []
 
-    preferred_program = _medicine_program_override(search_text)
+    is_ajovy = (
+        normalize_medicine_name("аджові") in query
+        or query in normalize_medicine_name("аджові")
+    )
 
-    # Додатковий захист для Аджові: якщо назву програми в основному
-    # переліку трохи перейменували, шукаємо її безпосередньо за словами
-    # «моменти» + «життя». Це не дає показати чужу програму (наприклад,
-    # програму для ТОЖЕО) навіть при некоректному форматуванні вкладки умов.
-    if normalize_medicine_name("аджові") in query and not preferred_program:
-        preferred_program = _find_social_program_by_hint(("моменти", "життя"))
+    # Спочатку збираємо всі рядки препаратів, що реально збігаються із запитом.
+    # Для Аджові назву програми з поточного блоку таблиці НЕ використовуємо:
+    # у Google Sheets через об'єднані/службові рядки current_program може бути
+    # успадкований від сусідньої програми.
+    if is_ajovy:
+        ajovy_items: list[dict[str, str]] = []
+        seen_ajovy: set[tuple[str, str, str, str]] = set()
+
+        for condition_data in SOCIAL_PROGRAM_CONDITIONS.values():
+            for item in condition_data.get("items", []):
+                product = clean_text(item.get("product", ""))
+
+                if normalize_medicine_name("аджові") not in normalize_medicine_name(product):
+                    continue
+
+                normalized_item = {
+                    "product": product,
+                    "limit": clean_text(item.get("limit", "")),
+                    "discount": clean_text(item.get("discount", "")),
+                    "category": clean_text(item.get("category", "")),
+                }
+                key = (
+                    normalize_medicine_name(normalized_item["product"]),
+                    normalize(normalized_item["limit"]),
+                    normalize(normalized_item["discount"]),
+                    normalize(normalized_item["category"]),
+                )
+                if key in seen_ajovy:
+                    continue
+                seen_ajovy.add(key)
+                ajovy_items.append(normalized_item)
+
+        if ajovy_items:
+            return [{
+                "program": AJOVY_PROGRAM,
+                "items": ajovy_items,
+            }]
+
+        return []
 
     grouped: dict[str, dict[str, Any]] = {}
-    all_matching_items: list[dict[str, str]] = []
 
     for stored_name, condition_data in SOCIAL_PROGRAM_CONDITIONS.items():
         stored_program = condition_data.get("program", stored_name)
@@ -1536,27 +1584,23 @@ def search_programs_by_medicine(
             SOCIAL_PROGRAMS,
         )
 
+        if not main_program:
+            continue
+
         matching_items: list[dict[str, str]] = []
 
         for item in condition_data.get("items", []):
             product = clean_text(item.get("product", ""))
 
             if query in normalize_medicine_name(product):
-                normalized_item = {
+                matching_items.append({
                     "product": product,
                     "limit": clean_text(item.get("limit", "")),
                     "discount": clean_text(item.get("discount", "")),
                     "category": clean_text(item.get("category", "")),
-                }
-                matching_items.append(normalized_item)
-                all_matching_items.append(normalized_item)
+                })
 
-        if not matching_items or not main_program:
-            continue
-
-        # Якщо для препарату відома однозначна програма, не показуємо
-        # випадкову програму, до якої його міг прив'язати старий формат таблиці.
-        if preferred_program:
+        if not matching_items:
             continue
 
         program_entry = grouped.setdefault(
@@ -1577,26 +1621,6 @@ def search_programs_by_medicine(
             if item_key not in existing_products:
                 program_entry["items"].append(item)
                 existing_products.add(item_key)
-
-    if preferred_program and all_matching_items:
-        unique_items: list[dict[str, str]] = []
-        seen_items: set[tuple[str, str, str]] = set()
-
-        for item in all_matching_items:
-            key = (
-                normalize_medicine_name(item["product"]),
-                normalize(item["limit"]),
-                normalize(item["discount"]),
-            )
-            if key in seen_items:
-                continue
-            seen_items.add(key)
-            unique_items.append(item)
-
-        return [{
-            "program": preferred_program,
-            "items": unique_items,
-        }]
 
     return sorted(
         grouped.values(),
