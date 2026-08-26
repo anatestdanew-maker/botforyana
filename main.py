@@ -164,6 +164,14 @@ def header_at(headers: list[str], column_number: int) -> str:
     return value_at(headers, column_number)
 
 
+def last_named_column(headers: list[str]) -> int | None:
+    """Повертає 1-based номер останнього непорожнього заголовка."""
+    for index in range(len(headers), 0, -1):
+        if clean_text(header_at(headers, index)):
+            return index
+    return None
+
+
 def shorten_button(text: str, max_length: int = 58) -> str:
     text = clean_text(text) or "Назва не вказана"
     if len(text) <= max_length:
@@ -567,6 +575,31 @@ for sheet_name in DRUG_SHEET_NAMES:
             "retail_price": value_at(row, COLUMN_L),
             "reimbursement": value_at(row, COLUMN_O),
             "copay": value_at(row, COLUMN_P),
+            # Для інсулінів додатково транслюємо останній стовпчик
+            # з вкладки «РЕЄСТР ІНСУЛІНИ». Номер колонки не зашитий
+            # вручну, тому якщо перед ним додадуть нові колонки,
+            # код все одно візьме саме останню.
+            "last_column_number": (
+                last_named_column(headers)
+                if sheet_name == INSULIN_SHEET
+                else None
+            ),
+            "last_column_header": (
+                header_at(headers, last_named_column(headers))
+                if (
+                    sheet_name == INSULIN_SHEET
+                    and last_named_column(headers) is not None
+                )
+                else ""
+            ),
+            "last_column_value": (
+                value_at(row, last_named_column(headers))
+                if (
+                    sheet_name == INSULIN_SHEET
+                    and last_named_column(headers) is not None
+                )
+                else ""
+            ),
         }
 
         sheet_records.append(record)
@@ -2357,6 +2390,24 @@ def format_drug_card(record: dict[str, Any]) -> str:
         header_at(headers, COLUMN_P) or "Сума доплати",
         format_money(record["copay"]),
     )
+
+    if sheet_name == INSULIN_SHEET:
+        last_column_number = record.get("last_column_number")
+        last_column_header = clean_text(record.get("last_column_header", ""))
+        last_column_value = clean_text(record.get("last_column_value", ""))
+
+        # Не дублюємо колонку P, якщо раптом вона виявиться останньою.
+        if (
+            last_column_number
+            and last_column_number != COLUMN_P
+            and last_column_value
+        ):
+            append_field(
+                lines,
+                "📌",
+                last_column_header or "Додаткова інформація",
+                last_column_value,
+            )
 
     return "\n\n".join(lines)
 
