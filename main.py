@@ -39,7 +39,7 @@ KNOWLEDGE_SEARCH_RESULTS_PER_PAGE = 10
 SOCIAL_SPREADSHEET_ID = "197_It5B9M2d5pX2m3igzrQGF3snHs9mzOzPuAQ_SUjU"
 
 SOCIAL_MAIN_SHEET_CANDIDATES = [
-    "Аптеки учасники оновлено 18.11",
+    "Аптеки учасники оновлено 28.10",
     "Аптеки учасники оновлено 15.06",
 ]
 
