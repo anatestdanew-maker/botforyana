@@ -1588,23 +1588,6 @@ def social_pharmacies_for_program(program: str) -> list[dict[str, Any]]:
     return results
 
 
-test_name = "Відновлення якості життя Медікард (АльфаНормік"
-
-print("Ключ таблиці аптек:", program_alias_key(test_name))
-print(
-    "Ключ основної програми:",
-    program_alias_key("Відновлення якості життя")
-)
-print(
-    "Результат зіставлення:",
-    resolve_to_main_program(test_name, SOCIAL_PROGRAMS)
-)
-print(
-    "Знайдено аптек:",
-    len(social_pharmacies_for_program(test_name))
-)
-
-
 def filter_social_pharmacies(
     program: str,
     filter_mode: str,
