@@ -948,16 +948,18 @@ def program_status(program_name: str) -> str:
 
 
 def program_status_icon(program_name: str) -> str:
+    if is_closed_conditions_only_program(program_name):
+        return "❌"
+
     status = program_status(program_name)
 
     if status == "closed":
-        return "🔴"
+        return "❌"
 
     if status == "closing":
         return "🟡"
 
     return "🟢"
-
 
 def program_sort_key(program_name: str) -> tuple[int, str]:
     order = {
