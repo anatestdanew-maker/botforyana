@@ -1673,7 +1673,10 @@ def social_programs_page_data(
         if program_id is not None:
             keyboard.append([
                 InlineKeyboardButton(
-                    shorten_button(f"{icon} {program}", max_length=60),
+                    shorten_button(
+    f"{icon} {program}{' (закрита)' if is_closed_conditions_only_program(program) else ''}",
+    max_length=60,
+),
                     callback_data=f"social_program:{program_id}",
                 )
             ])
