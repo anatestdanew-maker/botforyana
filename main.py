@@ -1022,14 +1022,14 @@ def load_social_sheet_records(
             if not program or not participation_value:
                 continue
 
-            if "відключено" in normalize(participation_value):
-                continue
+            is_connected = "відключен" not in participation_value.casefold()
 
             records.append({
                 "sheet_name": worksheet.title,
                 "row_number": row_number,
                 "program": program,
                 "participation_value": participation_value,
+                "is_connected": is_connected,
                 "short_number": short_number,
                 "department": department,
                 "oblast": oblast,
@@ -1569,12 +1569,23 @@ def social_pharmacies_for_program(program: str) -> list[dict[str, Any]]:
 
         existing = deduplicated.get(key)
 
-        if existing and record["is_zr"]:
+        if existing:
             merged = dict(existing)
-            merged["is_zr"] = True
+
+            # Якщо хоча б в одній вкладці аптека відключена,
+            # показуємо її як відключену.
+            merged["is_connected"] = (
+                existing.get("is_connected", True)
+                and record.get("is_connected", True)
+            )
+
+            if record["is_zr"]:
+                merged["is_zr"] = True
+
             deduplicated[key] = merged
-        elif not existing:
-            deduplicated[key] = record
+
+        else:
+            deduplicated[key] = dict(record)
 
     results = list(deduplicated.values())
 
@@ -2031,6 +2042,9 @@ def format_social_pharmacy(record: dict[str, Any]) -> str:
 
     if record["street"]:
         lines.append(f"🛣 {html.escape(record['street'])}")
+
+    if not record.get("is_connected", True):
+        lines.append("❌ <b>Аптека відключена від програми</b>")
 
     return "\n".join(lines)
 
