@@ -1023,6 +1023,16 @@ def load_social_sheet_records(
                 continue
 
             is_connected = "відключен" not in participation_value.casefold()
+            if "відключен" in participation_value.casefold():
+    logger.warning(
+        "ЗНАЙДЕНО ВІДКЛЮЧЕНУ АПТЕКУ: вкладка=%s, рядок=%s, "
+        "програма=%s, значення=%r, is_connected=%s",
+        worksheet.title,
+        row_number,
+        program,
+        participation_value,
+        is_connected,
+    )
 
             records.append({
                 "sheet_name": worksheet.title,
@@ -2021,6 +2031,12 @@ def social_results_markup(
 
 
 def format_social_pharmacy(record: dict[str, Any]) -> str:
+    logger.warning(
+    "СТАТУС АПТЕКИ: №%s, програма=%s, is_connected=%r",
+    record.get("short_number"),
+    record.get("program"),
+    record.get("is_connected"),
+)
     zr_mark = " 💚 <b>ЗР</b>" if record["is_zr"] else ""
 
     title = (
