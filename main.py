@@ -1022,17 +1022,18 @@ def load_social_sheet_records(
             if not program or not participation_value:
                 continue
 
-            is_connected = "відключен" not in participation_value.casefold()
+is_connected = "відключен" not in participation_value.casefold()
+
             if "відключен" in participation_value.casefold():
-    logger.warning(
-        "ЗНАЙДЕНО ВІДКЛЮЧЕНУ АПТЕКУ: вкладка=%s, рядок=%s, "
-        "програма=%s, значення=%r, is_connected=%s",
-        worksheet.title,
-        row_number,
-        program,
-        participation_value,
-        is_connected,
-    )
+                logger.warning(
+                    "ЗНАЙДЕНО ВІДКЛЮЧЕНУ АПТЕКУ: вкладка=%s, рядок=%s, "
+                    "програма=%s, значення=%r, is_connected=%s",
+                    worksheet.title,
+                    row_number,
+                    program,
+                    participation_value,
+                    is_connected,
+                )
 
             records.append({
                 "sheet_name": worksheet.title,
