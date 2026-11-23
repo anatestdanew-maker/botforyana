@@ -1893,11 +1893,20 @@ def selected_social_program(context: ContextTypes.DEFAULT_TYPE) -> str:
     return clean_text(context.user_data.get("social_program", ""))
 
 
-KRKA_CLOSED_PROGRAM_KEY = program_alias_key('КРКА "ЗАХИСТІТЬ СУДИНИ - ЗБЕРЕЖІТЬ СЕРЦЕ" та "ПОКРАЩЕНИЙ КРОВООБІГ ДЛЯ ЗДОРОВ’Я МОЗКУ"')
+KRKA_CLOSED_PROGRAM_KEY = program_alias_key(
+    'КРКА "ЗАХИСТІТЬ СУДИНИ - ЗБЕРЕЖІТЬ СЕРЦЕ" та "ПОКРАЩЕНИЙ КРОВООБІГ ДЛЯ ЗДОРОВ’Я МОЗКУ"'
+)
+
+CLOSED_SOCIAL_PROGRAM_KEYS = {
+    KRKA_CLOSED_PROGRAM_KEY,
+    program_alias_key('Дарниця "Опануйте свій тиск"'),
+    program_alias_key('Дарниця "ШЛЯХ ДО ЗДОРОВОГО СЕРЦЯ" (Ефез)'),
+    program_alias_key('Артеріум "КЛЮЧ ДО ЖИТТЯ"'),
+}
 
 
 def is_closed_conditions_only_program(program: str) -> bool:
-    return program_alias_key(program) == KRKA_CLOSED_PROGRAM_KEY
+    return program_alias_key(program) in CLOSED_SOCIAL_PROGRAM_KEYS
 
 
 def social_program_actions_markup(
